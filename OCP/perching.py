@@ -1,10 +1,11 @@
 import casadi as cs
 import random
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 
 # flat plate model lift and drag
-
 def C_L(alpha):
     return 2 * cs.sin(alpha) * cs.cos(alpha)
 
@@ -78,6 +79,132 @@ def build_f(params):
                        [cs.vertcat(xdot, zdot, thetadot, phidot, xddot, zddot, thetaddot)])
 
 
+def plot(w_opt, target, penalty_weights):
+    L = 1.0
+    L_lift = 0.3    
+    f = 0.6
+    eps = 0.4
+    extra = 60
+
+    fig = plt.figure(figsize=(10, 10))
+    gs = fig.add_gridspec(3, 2, hspace=0.5)
+
+    ax_sim = fig.add_subplot(gs[0:2, 0])
+    ax_sim.set_xlim(-3.5, 2)
+    ax_sim.set_ylim(-3, 2.5)
+    ax_sim.set_aspect('equal', adjustable='box')
+    ax_sim.set_title("Glider perching simulation")
+
+    ax_vel = fig.add_subplot(gs[2, 0])
+    ax_vel.set_xlim(0, len(w_opt)//8 - 1)
+    dot_concat = np.concatenate([w_opt[4::8], w_opt[5::8]])
+    ax_vel.set_ylim(np.min(dot_concat)-eps, np.max(dot_concat)+eps)
+    xdot_line, = ax_vel.plot([], [], lw=2, color="r", label="xdot")
+    zdot_line, = ax_vel.plot([], [], lw=2, color="g", label="zdot")
+    ax_vel.legend(loc="upper right")
+    ax_vel.set_title("Linear velocities")
+
+    ax_ang = fig.add_subplot(gs[2, 1])
+    ax_ang.set_xlim(0, len(w_opt)//8 - 1)
+    ang_concat = np.concatenate([w_opt[6::8], w_opt[7::8]])
+    ax_ang.set_ylim(np.min(ang_concat)-eps, np.max(ang_concat)+eps)
+    thetadot_line, = ax_ang.plot([], [], lw=2, color="b", label="thetadot")
+    phidot_line, = ax_ang.plot([], [], lw=2, color="m", label="phidot")
+    ax_ang.legend(loc="upper right")
+    ax_ang.set_title("Angular velocities")
+
+    x0_target = target[0] - f*L*np.cos(target[2])
+    z0_target = target[1] - f*L*np.sin(target[2])
+    x1_target = x0_target + L*np.cos(target[2])
+    z1_target = z0_target + L*np.sin(target[2])
+
+    glider, = ax_sim.plot([], [], 'o-', lw=3)
+    target_pose, = ax_sim.plot([x0_target, x1_target], [z0_target, z1_target], 'o-', lw=3, color="red", alpha=0.2)
+    trail, = ax_sim.plot([], [], '-', lw=3, color='k', alpha=0.3)
+
+    ax_attack = fig.add_subplot(gs[0, 1])
+    ax_attack.set_xlim(0, len(w_opt)//8 - 1)
+    attack_angles = w_opt[2::8] - np.atan2(w_opt[5::8], w_opt[4::8])
+    ax_attack.set_ylim(np.min(attack_angles)-eps, np.max(attack_angles)+eps)
+    attack_line, = ax_attack.plot([], [], lw=2, color="orange")
+    ax_attack.set_title("Angle of attack")
+
+    ax_error = fig.add_subplot(gs[1, 1])
+    ax_error.set_xlim(0, len(w_opt)//8 - 1)
+
+    Js = w_opt[:7] - target
+    weighted_errors = np.dot(Js*penalty_weights, Js)
+    ax_error.set_ylim(0, np.max(weighted_errors))
+    error_line, = ax_error.plot([], [], lw=2, color="purple")
+    ax_error.set_title("Target weighted squared error")
+
+    def init():
+        global trail_x, trail_z, xdot_data, zdot_data, thetadot_data, phidot_data, attack_angle_data, error_data
+
+        glider.set_data([], [])
+        trail.set_data([], [])
+        xdot_line.set_data([], [])
+        zdot_line.set_data([], [])
+        thetadot_line.set_data([], [])
+        phidot_line.set_data([], [])
+        attack_line.set_data([], [])
+        error_line.set_data([], [])
+
+        trail_x = []
+        trail_z = []
+        xdot_data = []
+        zdot_data = []
+        thetadot_data = []
+        phidot_data = []
+        attack_angle_data = []
+        error_data = []
+        return glider, trail, xdot_line, zdot_line, thetadot_line, phidot_line, attack_line, error_line
+
+    def update(i):
+        global trail_x, trail_z, xdot_data, zdot_data, thetadot_data, phidot_data, attack_angle_data, error_data
+
+        if(len(w_opt) < (i+1)*8):
+            return
+        else:
+            x, z, theta, phi, xdot, zdot, thetadot, phi_dot = w_opt[i*8 : (i+1)*8]
+
+        x0 = x - f*L*np.cos(theta)
+        z0 = z - f*L*np.sin(theta)
+        x1 = x0 + L*np.cos(theta)
+        z1 = z0 + L*np.sin(theta)
+        xl = x - f*L*np.cos(theta) - L_lift*np.cos(theta+phi)
+        zl = z - f*L*np.sin(theta) - L_lift*np.sin(theta+phi)
+        trail_x.append(x)
+        trail_z.append(z)
+        glider.set_data([xl, x0, x1], [zl, z0, z1])
+        trail.set_data(trail_x, trail_z)
+
+        xdot_data.append(xdot)
+        zdot_data.append(zdot)
+        x_axis = range(len(xdot_data))
+        xdot_line.set_data(x_axis, xdot_data)
+        zdot_line.set_data(x_axis, zdot_data)
+
+        thetadot_data.append(thetadot)
+        phidot_data.append(phi_dot)
+        thetadot_line.set_data(x_axis, thetadot_data)
+        phidot_line.set_data(x_axis, phidot_data)
+
+        attack_angle_data.append(theta - np.atan2(zdot, xdot))
+        attack_line.set_data(x_axis, attack_angle_data)
+
+        J_error = w_opt[i*8 : i*8+7].flatten() - target
+        weighted_squared_error = np.dot(J_error*penalty_weights, J_error)
+        error_data.append(weighted_squared_error)
+        error_line.set_data(x_axis, error_data)
+
+        return glider, trail, xdot_line, zdot_line, thetadot_line, phidot_line, attack_line, error_line
+
+    ani = animation.FuncAnimation(fig, update, frames=len(w_opt)//8 + extra,
+                                init_func=init, blit=False, interval=1000 / 30, repeat=True)
+    fig.canvas.manager.set_window_title("Perching OCP")
+    plt.show()
+
 def main():
     # plane parameters
     m = 0.065
@@ -95,16 +222,18 @@ def main():
     I = m_w * l_w ** 2 + m_e * (l + l_e) ** 2 + m_f * l_f ** 2
 
     h = 0.01
-    N = 101
+    N = 111 
 
     params = [l_w, l, l_e, rho, S_w, S_e, m, g, I]
 
     f = build_f(params)
 
     # objective function weights
-    x_N = [0., 0., cs.pi / 4, 0., 0., 0., 0.]
-    Q_N = [2., 50., 0., 0., 4., 4., 0.]
-    R = 100.
+    x_N = [0.,  0,  cs.pi/4. , 0.,       0.,    0.,    0.]
+    #      x    z    theta       phidot    xdot   ydot   thetadot
+    Q_N = [1000.,  700., 10.,        0.,       40.,    40,    40] 
+    R = 500. 
+    rotPenaltyWeight = 10000
 
     # Start with an empty NLP
     w = []
@@ -144,6 +273,7 @@ def main():
 
         Xnext = Xk + h * f(Xk, Uk)
         Xk = construct_dyn_state(k+1)
+        J += h * rotPenaltyWeight * Xk[6]**2
         w   += [Xk]
         if k < N-1:
             lbw += [-cs.inf, -cs.inf, -cs.inf, -cs.pi / 3, -cs.inf, -cs.inf, -cs.inf]
@@ -153,8 +283,8 @@ def main():
 
         # Add equality constraint (dynamics)
         g   += [Xnext - Xk]
-        lbg += [0., 0., 0., 0., 0., 0., 0.,]
-        ubg += [0., 0., 0., 0., 0., 0., 0.,]
+        lbg += [0]*7
+        ubg += [0]*7
 
     # final state constraints
     lbw += [-cs.inf, -cs.inf, -cs.inf, -cs.inf, -cs.inf, -cs.inf, -cs.inf]
@@ -162,7 +292,8 @@ def main():
     wk = f(wk, uk).toarray()[:, 0]
     w0 += wk.tolist()
 
-    J += 40. * cs.dot(Xk * Q_N, Xk)
+    J_error = Xk-np.array(x_N)
+    J += 40. * cs.dot(J_error * Q_N, J_error)
 
     # Create an NLP solver
     print("solving")
@@ -173,32 +304,8 @@ def main():
     sol = solver(x0=w0, lbx=lbw, ubx=ubw, lbg=lbg, ubg=ubg)
     w_opt = sol['x'].full()
 
-    import matplotlib.pyplot as plt
-    fig, axs = plt.subplots(1, 6, figsize=(20, 4))
-    axs[0].plot(w_opt[0::8], w_opt[1::8])
-    axs[0].set_xlabel("x")
-    axs[0].set_ylabel("z")
-    axs[0].set_title("Positions")
-    axs[0].set_xlim(-4., 1.)
-    axs[0].set_ylim(-1., 1.)
+    print("Final objective:", sol['f'].full().item())
 
-    axs[1].plot(w_opt[4::8], w_opt[5::8])
-    axs[1].set_xlabel("xdot")
-    axs[1].set_ylabel("zdot")
-    axs[1].set_title("Velocities")
-
-    axs[2].plot(w_opt[2::8])
-    axs[2].set_title("theta")
-    axs[3].plot(w_opt[3::8])
-    axs[3].set_title("phi")
-
-    axs[4].plot(w_opt[0::8])
-    axs[4].set_ylabel("x")
-    axs[4].set_ylim(-4., 3.)
-
-    axs[5].plot(w_opt[1::8])
-    axs[5].set_ylabel("z")
-    axs[5].set_ylim(-1., 1.)
-    plt.show()
+    plot(w_opt, x_N, Q_N)
 
 main()
