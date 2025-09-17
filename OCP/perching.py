@@ -132,8 +132,8 @@ def plot(w_opt, target, penalty_weights):
     ax_error = fig.add_subplot(gs[1, 1])
     ax_error.set_xlim(0, len(w_opt)//8 - 1)
 
-    Js = w_opt[:7] - target
-    weighted_errors = np.dot(Js*penalty_weights, Js)
+    Js = np.array([w_opt[i:i+7].flatten() - target for i in range(0,len(w_opt),8)])
+    weighted_errors = np.sum(Js*penalty_weights*Js, axis=1)
     ax_error.set_ylim(0, np.max(weighted_errors))
     error_line, = ax_error.plot([], [], lw=2, color="purple")
     ax_error.set_title("Target weighted squared error")
@@ -209,7 +209,7 @@ def main():
     # plane parameters
     m = 0.065
     l_w = 0.01                                      # vector from CoM to centroid of wing (positive means wing is in front of CoM)
-    l = 0.26                                       # vector from CoM to start of elevator (attachment point to body)
+    l = 0.26                                        # vector from CoM to start of elevator (attachment point to body)
     l_e = 0.02                                      # distance to centroid of elevator from start (attachment point to body)
     rho = 1.2041                                    # assume 20 degrees C
     S_w = 0.086                                     # surface area of wing
