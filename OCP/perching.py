@@ -209,7 +209,7 @@ def main():
     # plane parameters
     m = 0.065
     l_w = 0.01                                      # vector from CoM to centroid of wing (positive means wing is in front of CoM)
-    l = -0.26                                       # vector from CoM to start of elevator (attachment point to body)
+    l = 0.26                                       # vector from CoM to start of elevator (attachment point to body)
     l_e = 0.02                                      # distance to centroid of elevator from start (attachment point to body)
     rho = 1.2041                                    # assume 20 degrees C
     S_w = 0.086                                     # surface area of wing
@@ -229,11 +229,10 @@ def main():
     f = build_f(params)
 
     # objective function weights
-    x_N = [0.,  0,  cs.pi/4. , 0.,       0.,    0.,    0.]
+    x_N = [0.,  0,  0. , 0.,       0.,    0.,    0.]
     #      x    z    theta       phidot    xdot   ydot   thetadot
-    Q_N = [1000.,  700., 10.,        0.,       40.,    40,    40] 
-    R = 500. 
-    rotPenaltyWeight = 10000
+    Q_N = [10.,  10., 10.,        0.,       1.,    1,    1] 
+    R = 5. 
 
     # Start with an empty NLP
     w = []
@@ -273,7 +272,6 @@ def main():
 
         Xnext = Xk + h * f(Xk, Uk)
         Xk = construct_dyn_state(k+1)
-        J += h * rotPenaltyWeight * Xk[6]**2
         w   += [Xk]
         if k < N-1:
             lbw += [-cs.inf, -cs.inf, -cs.inf, -cs.pi / 3, -cs.inf, -cs.inf, -cs.inf]
