@@ -1,18 +1,33 @@
-from glider import Glider
+from glider import Glider, State
 from renderer import PygameRenderer
 import numpy as np
 
 max_t = 3
 t = 0
+dt = 0.003
 
 glider = Glider()
+glider.set_state(State(
+    x = 0.0,
+    z = 2.0,
+    theta = 0.0,
+    phi = 0.0,
+    xdot = 1.0,
+    zdot = 0.0,
+    thetadot= 0.0
+))
 
 states = []
 
 while t < max_t:
-    glider.step()
-    states.append(glider.get_state())
-    t+=0.001
+    state_dot = glider.update()
+
+    next_state = glider.get_state() + state_dot * dt
+    states.append(next_state.to_array())
+
+    glider.set_state(next_state)
+
+    t+=dt
 
 def glider_state_parser(state):
         """

@@ -46,8 +46,9 @@ class PygameRenderer:
                     pygame.draw.circle(self.screen, (200,30,30), pt, 6)
 
 
+        fps = int(self.clock.get_fps())
         txt = self.fnt.render(
-            f"time_scale {self.time_scale:.2f}",
+            f"time_scale {self.time_scale:.2f}    fps {fps:.2f}",
             True, (10,10,10)
         )
         self.screen.blit(txt, (10,10))
