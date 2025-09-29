@@ -2,14 +2,19 @@ import casadi as cs
 import numpy as np
 from utils.live_plot import live_plot
 
-# flat plate model lift and drag
 def C_L(alpha):
     return 2 * cs.sin(alpha) * cs.cos(alpha)
-
 
 def C_D(alpha):
     return 2 * cs.sin(alpha) * cs.sin(alpha)
 
+def C_M(alpha):
+    return -C_L(alpha) * 0.25
+
+# Mean Chrod to Wing Center Of Mass
+def mc_to_wcom(l_w):
+    # should depend on the airfoil's shape
+    return l_w+0.003
 
 def construct_dyn_state(t):
     x = cs.SX.sym("x_" + str(t))
@@ -21,8 +26,8 @@ def construct_dyn_state(t):
     thetadot = cs.SX.sym("thetadot_" + str(t))
     return cs.vertcat(x, z, theta, phi, xdot, zdot, thetadot)
 
-
-def build_f(params):
+def build_dynamic_model(params):
+    # The state vector is expressed wrt a static point on the aircraft called Body Reference Point (BRP)
     x = cs.SX.sym("x")
     z = cs.SX.sym("z")
     theta = cs.SX.sym("theta")
@@ -35,37 +40,48 @@ def build_f(params):
     states = cs.vertcat(x, z, theta, phi, xdot, zdot, thetadot)
     controls = phidot
 
-    l_w, l, l_e, rho, S_w, S_e, m, g, I = params
+    # the l* quantities are expressed along the x of the BRP RF.
+    l_w_i, l_w_f , l, l_e, l_f, m_w, m_e, m_f, rho, S_w, S_e, m, g, I = params
+
+    # wing mean chord 
+    l_w_m = (l_w_i + l_w_f) / 2
+
+    com_w = l_w_m + mc_to_wcom(l_w_m)
+    com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption)                
+    com_f = l_f
+    com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
 
     # geometric centroid of aerodynamic surfaces (mean chord for flat plate)
-    x_wdot = xdot + l_w * thetadot * cs.sin(theta)
-    z_wdot = zdot - l_w * thetadot * cs.cos(theta)
+    x_wdot = xdot + l_w_m * thetadot * cs.sin(theta)
+    z_wdot = zdot - l_w_m * thetadot * cs.cos(theta)
     x_edot = xdot + l * thetadot * cs.sin(theta) + l_e * (thetadot + phidot) * cs.sin(theta + phi)
     z_edot = zdot - l * thetadot * cs.cos(theta) - l_e * (thetadot + phidot) * cs.cos(theta + phi)
     
     # force vectors for aerodynamic surfaces (lift, drag, gravity)
 
+    c = np.abs(l_w_f - l_w_i)
     alpha_w = theta - cs.atan2(z_wdot, x_wdot)
     v_w = cs.sqrt(x_wdot * x_wdot + z_wdot * z_wdot + 1e-8)             # flow/air speed
     F_Lw = C_L(alpha_w) * cs.vertcat(-z_wdot, x_wdot)                   # lift force vector (proportional to)
     F_Dw = C_D(alpha_w) * cs.vertcat(-x_wdot, -z_wdot)                  # drag force vector (proportional to)
     F_w = 0.5 * rho * v_w * S_w * (F_Lw + F_Dw)
+    M_w = 0.5 * rho * v_w**2 * S_w * c * C_M(alpha_w)
 
     alpha_e = theta + phi - cs.atan2(z_edot, x_edot)
     v_e = cs.sqrt(x_edot * x_edot + z_edot * z_edot + 1e-8)    # flow/air speed
     F_Le = C_L(alpha_e) * cs.vertcat(-z_edot, x_edot)          # lift force vector (proportional to)
     F_De = C_D(alpha_e) * cs.vertcat(-x_edot, -z_edot)         # drag force vector (proportional to)
     F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
+    M_e = 0.5 * rho * v_e**2 * S_e * c * C_M(alpha_e)
 
     # compute torques with respect to fixed reference point induced by forces
 
     # moment arms (vector from reference point of state to wing/elevator/fuselage)
+    r_w = [ (- com_w + com_a) * cs.cos(theta), (- com_w + com_a) * cs.sin(theta) ]
+    r_e = [ (- com_e + com_a) * cs.cos(theta), (- com_e + com_a) * cs.sin(theta)]
 
-    r_w = [-l_w * cs.cos(theta), -l_w * cs.sin(theta)]
-    r_e = [-l * cs.cos(theta) - l_e * cs.cos(theta + phi), -l * cs.sin(theta) - l_e * cs.sin(theta + phi)]
-
-    τ_w = r_w[1] * F_w[0] - r_w[0] * F_w[1]
-    τ_e = r_e[1] * F_e[0] - r_e[0] * F_e[1]
+    τ_w = r_w[1] * F_w[0] - r_w[0] * F_w[1] + M_w
+    τ_e = r_e[1] * F_e[0] - r_e[0] * F_e[1] + M_e
     thetaddot = -1. / I * (τ_w + τ_e)
 
     # linear accelerations (F = ma)
@@ -74,12 +90,13 @@ def build_f(params):
     
     return cs.Function('f', [states, controls],
                        [cs.vertcat(xdot, zdot, thetadot, phidot, xddot, zddot, thetaddot)])
-
+    
 def main():
     # plane parameters
     m = 0.065
-    l_w = 0.01                                      # vector from CoM to centroid of wing (positive means wing is in front of CoM)
-    l = 0.26                                        # vector from CoM to start of elevator (attachment point to body)
+    l_w_i = 0.005                                   # vector from CoM to centroid of wing (positive means wing is in front of CoM)
+    l_w_f = 0.015                                   # vector from CoM to centroid of wing (positive means wing is in front of CoM)
+    l = 0.26                                       # vector from CoM to start of elevator (attachment point to body)
     l_e = 0.02                                      # distance to centroid of elevator from start (attachment point to body)
     rho = 1.2041                                    # assume 20 degrees C
     S_w = 0.086                                     # surface area of wing
@@ -87,6 +104,7 @@ def main():
     m_w = 0.6 * m * S_w / (S_w + S_e)               # mass of wing
     m_e = 0.6 * m * S_e / (S_w + S_e)               # mass of elevator
     m_f = 0.4 * m                                   # mass of fuselage
+    l_w = 0.5*(l_w_i+l_w_f)
     l_f = -(l_w * m_w + (l - l_e) * m_e) / m_f      # vector to fuselage CoM
     g = 9.81
     I = m_w * l_w ** 2 + m_e * (l + l_e) ** 2 + m_f * l_f ** 2
@@ -94,9 +112,9 @@ def main():
     h = 0.01
     N = 111 
 
-    params = [l_w, l, l_e, rho, S_w, S_e, m, g, I]
+    params = [l_w_i, l_w_f, l, l_e, l_f, m_w, m_e, m_f, rho, S_w, S_e, m, g, I]
 
-    f = build_f(params)
+    f = build_dynamic_model(params)
 
     # objective function weights
     x_N = [0.,  0,  0. , 0.,       0.,    0.,    0.]
@@ -120,9 +138,6 @@ def main():
     lbw += [-3.5, 0.1 , 0. , 0., 7., 0. , 0.]
     ubw += [-3.5, 0.1 , 0. , 0., 7., 0. , 0.]
     w0 = [-3.5, 0.1 , 0. , 0., 7., 0. , 0.]
-
-    # initialisation for X
-    X0 = np.linspace(w0, np.zeros_like(w0), N+1)
     wk = [-3.5, 0.1 , 0. , 0., 7., 0. , 0.]
 
     for k in range(N):
