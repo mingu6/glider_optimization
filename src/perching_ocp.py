@@ -83,9 +83,10 @@ if __name__ == '__main__':
 
     for k in range(max_iter):
         traj_COC = coc.ocSolver(horizon=111, init_state=init_state, auxvar_value=current_parameter_COC)
+        if k == 0 or k == max_iter - 1:
+            env.play_animation(traj_COC['state_traj_opt'], traj_COC['control_traj_opt'])
         auxsys_COC = coc.getAuxSys(opt_sol=traj_COC, threshold=1e-5)
         idoc_blocks = idoc_ineq.build_blocks_idoc(auxsys_COC, args.delta)
-
         if args.method == 'full':
             start = time.time()
             traj_deriv_COC = idoc_ineq.idoc_full(*idoc_blocks)

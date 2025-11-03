@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
+
 def live_plot(w_opt, target, penalty_weights):
     L = 1.0
     L_lift = 0.3    
