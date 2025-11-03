@@ -1,0 +1,3 @@
+[submodule "external/Implicit-Diff-Optimal-Control"]
+	path = external/Implicit-Diff-Optimal-Control
+	url = https://github.com/mingu6/Implicit-Diff-Optimal-Control.git
