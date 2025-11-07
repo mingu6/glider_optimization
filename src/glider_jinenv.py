@@ -53,9 +53,11 @@ class GliderPerching :
         xdot = SX.sym("xdot")
         zdot = SX.sym("zdot")
         thetadot = SX.sym("thetadot")
+        t = SX.sym("t")
+        
         phidot = SX.sym("phidot")
 
-        self.X = vertcat(x, z, theta, phi, xdot, zdot, thetadot)
+        self.X = vertcat(x, z, theta, phi, xdot, zdot, thetadot, t)
         self.U = phidot
 
         # wing mean chord 
@@ -103,15 +105,15 @@ class GliderPerching :
         xddot = 1. / m * (F_w[0] + F_e[0])
         zddot = 1. / m * (F_w[1] + F_e[1]) - g
         
-        self.f = vertcat(xdot, zdot, thetadot, phidot, xddot, zddot, thetaddot)
+        self.f = vertcat(xdot, zdot, thetadot, phidot, xddot, zddot, thetaddot, 0)
 
-    def initCost(self, state_weights, wu=0.001):
-        self.goal = [0., 0., 0., 0., 0., 0., 0.]
+    def initCost(self, state_weights, wu=0.001, stage_scale = 0.0001):
+        self.goal = [0., 0., 0., 0., 0., 0., 0., 0.]
         self.state_weights = state_weights
         self.cost_auxvar = vcat([])
 
         err = self.X - self.goal
-        self.path_cost = wu * (self.U * self.U) + err.T @ diag(state_weights)*0.001 @ err 
+        self.path_cost = wu * (self.U * self.U) # + err.T @ diag(state_weights)*stage_scale @ err 
         self.dpath_cost_dx = gradient(self.path_cost, self.X)
         self.dpath_cost_du = gradient(self.path_cost, self.U)
         
@@ -142,9 +144,9 @@ class GliderPerching :
         Create stunning glider perching animation with all metrics.
         
         Args:
-            state_traj: State trajectory (N x 7) - [x, z, theta, phi, xdot, zdot, thetadot]
+            state_traj: State trajectory (N x 8) - [x, z, theta, phi, xdot, zdot, thetadot]
             control_traj: Control trajectory (N x 1) - [phidot]
-            goal: Goal state (7,)
+            goal: Goal state (8,)
             state_weights: State weights for error computation (7,)
             save_option: Whether to save animation as GIF
             title: Filename for saved animation
@@ -299,7 +301,7 @@ class GliderPerching :
                     thetadot_line, phidot_line, attack_line, error_line)
             
             # Extract current state
-            x, z, theta, phi, xdot, zdot, thetadot = state_traj[frame]
+            x, z, theta, phi, xdot, zdot, thetadot, time = state_traj[frame]
             
             # ============ UPDATE SIMULATION ============
             # Compute glider body points
@@ -352,7 +354,7 @@ class GliderPerching :
         # ==================== CREATE ANIMATION ====================
         ani = animation.FuncAnimation(
             fig, update, frames=n_frames + 50,
-            init_func=init, blit=True, 
+            init_func=init, blit=False, 
             interval=1000 / fps, repeat=False
         )
         
