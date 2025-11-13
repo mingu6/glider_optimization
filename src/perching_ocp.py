@@ -61,7 +61,7 @@ if __name__ == '__main__':
     # initial guess
     nn_seed = 100
     np.random.seed(nn_seed)
-    init_parameter = [0.036, 0.032, 13]
+    init_parameter = [0.086, 0.022, 13]
 
     # learning rate and maximum iteration
     lr = 1e-7
@@ -74,7 +74,7 @@ if __name__ == '__main__':
     best_loss = float("inf")
     
     current_parameter_COC = init_parameter
-    save_results = True
+    save_results = False
 
     init_state = [-3.5, 0.1 , 0. , 0., 7., 0. , 0., 0.01]
 
@@ -84,7 +84,7 @@ if __name__ == '__main__':
     
     traj_COC = coc.ocSolver(horizon=111, init_state=init_state, auxvar_value=current_parameter_COC, timeVarying=True)
     env.play_animation(traj_COC['state_traj_opt'], traj_COC['control_traj_opt'], save_option=save_results, title="perching_initial")
-    
+    exit(0)    
 
     pbar = trange(max_iter, desc="Training", ncols=100)
     for k in pbar:

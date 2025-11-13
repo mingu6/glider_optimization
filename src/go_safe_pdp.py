@@ -245,16 +245,27 @@ class COCsys:
             lbg += self.n_final_equ_cstr * [0]
             ubg += self.n_final_equ_cstr * [0]
 
+        sl = MX.sym('Sl', self.n_state)
+        w += [sl]
+        w0 += [0]*self.n_state
+        lbw += self.n_state*[0]
+        ubw += self.n_state*[self.inf]
+
+        g += [(Xk - [0,0,0.5,0,0,0,0,0]) - sl]
+        g += [-(Xk - [0,0,0.5,0,0,0,0,0]) - sl]
+        lbg += 2*self.n_state * [- self.inf]
+        ubg += 2*self.n_state * [0]
+
         # Add the final cost
-        J = J + self.final_cost_fn(Xk, auxvar_value)
+        J = J + sum1([10., 20., 10., 0, 14, 7, 0, 0.] * sl)
 
         # Create an NLP solver and solve
         opts = {'ipopt.print_level': print_level, 'ipopt.sb': 'yes', 'print_time': print_level}
         prob = {'f': J, 'x': vertcat(*w), 'g': vertcat(*g)}
         solver = nlpsol('solver', 'ipopt', prob, opts)
         # Solve the NLP
-        assert len(lbw) == self.n_state * (horizon+1) + self.n_control * (horizon)
-        assert len(ubw) == self.n_state * (horizon+1) + self.n_control * (horizon)
+        #assert len(lbw) == self.n_state * (horizon+1) + self.n_control * (horizon)
+        #assert len(ubw) == self.n_state * (horizon+1) + self.n_control * (horizon)
                 
         sol = solver(x0=w0, lbx=lbw, ubx=ubw, lbg=lbg, ubg=ubg)
         w_opt = sol['x'].full().flatten()
@@ -262,6 +273,11 @@ class COCsys:
         g = sol['g'].full().flatten()
 
         # extract the optimal control and state
+        print(w_opt[-self.n_state:])
+        w_opt = w_opt[:-self.n_state]
+        lam_g = lam_g[:-2*self.n_state]
+        g = g[:-2*self.n_state]
+
         sol_traj = numpy.concatenate((w_opt, self.n_control * [0]))
         sol_traj = numpy.reshape(sol_traj, (-1, self.n_state + self.n_control))
         state_traj_opt = sol_traj[:, 0:self.n_state]
