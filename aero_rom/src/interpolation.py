@@ -22,20 +22,16 @@ class RGISurface:
 
     def __call__(self, alpha_deg, velocity):
         xi = np.atleast_2d([alpha_deg, velocity])
-        out = self._rgi(xi)  # method from __init__
+        out = self._rgi(xi)  
         return float(out[0])
 
     def grad(self, alpha_deg, velocity):
-        # Partial w.r.t alpha (nu=(1,0)), and w.r.t velocity (nu=(0,1))
         xi = np.atleast_2d([alpha_deg, velocity])
         d_da = float(self._rgi(xi, nu=(1, 0))[0])
         d_dv = float(self._rgi(xi, nu=(0, 1))[0])
         return d_da, d_dv
 
     def to_npz(self, path):
-        # Persist grids and values; we recompute spline at load time (fast)
-        # We need the original values; query the internal array:
-        # RegularGridInterpolator stores the original grid in .values
         np.savez_compressed(path,
                             alpha=self.alpha,
                             vel=self.vel,

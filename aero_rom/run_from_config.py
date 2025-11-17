@@ -1,6 +1,5 @@
 # CLI entry point
 
-# run_from_config.py
 import argparse
 from src.pipeline import run_pipeline
 

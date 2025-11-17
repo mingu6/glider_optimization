@@ -86,7 +86,7 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
 
     x_ref=0.019
     #x_ref=0.032 # from flow5
-    z_ref = -0.002  # your geometry uses z=0 for the quarter-chord line
+    z_ref = -0.002 
 
     # Mean aerodynamic chord (length) for coefficient normalization
     cbar = np.sum(0.5*(cA**2 + cB**2) * dy) / S
@@ -171,7 +171,6 @@ def run_llt(airfoil_CST, aoa_range, vel_range, airflow, computation_params,
             Gamma = 0.5 * V_inf * c * cl             # (n_pan,)
 
             # --- AD-safe Picard iteration: fixed count, no early break ---
-            # (You can still compute a residual for monitoring; just don't branch on it.)
             if enforce_symmetry:
                 mirror_of = computation_params['mirror_of']  # integer index array
 

@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 
 def save_surface_csv(path, alpha, vel, values, value_name):
-    # wide format is convenient for humans:
     df = pd.DataFrame(values, index=alpha, columns=vel)
     df.index.name = "alpha_deg"
     df.columns.name = "velocity"
