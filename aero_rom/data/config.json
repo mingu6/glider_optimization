@@ -1,4 +1,8 @@
 {
+
+    "device": "mps",
+    "model_size": "xlarge",
+
     "flow": {
     "R": 287.058,
     "T": 288.15,

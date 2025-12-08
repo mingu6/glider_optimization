@@ -4,3 +4,4 @@ scipy 1.13.0
 aerosandbox 4.2.8
 neuralfoil 0.3.2
 python 3.12
+cuneuralfoil 0.0.1

@@ -5,8 +5,9 @@ from pathlib import Path
 from src.config import load_config
 from src.io_utils import save_surface_csv
 from src.interpolation import RGISurface
-from src.llt import run_llt
+from src.llt import run_llt_cuNF_grid, run_llt
 from src.llt import LLT_computational_params as compute_llt_params
+from cuneuralfoil.cu_kulfan_airfoil import cuKulfanAirfoil
 
 
 
@@ -21,6 +22,8 @@ def run_pipeline(config_path: str):
 
     alphas = np.arange(cfg['flow']['alpha_range'][0], cfg['flow']['alpha_range'][1]+cfg['flow']['alpha_step'], cfg['flow']['alpha_step'])
     vels   = np.arange(cfg['flow']['vel_range'][0], cfg['flow']['vel_range'][1]+cfg['flow']['vel_step'], cfg['flow']['vel_step'])
+
+    AoA_grid, V_inf_grid = np.meshgrid(alphas, vels, indexing="ij")
 
     R = np.array(cfg['flow']["R"], dtype=float)  # specific gas constant for air
     T = np.array(cfg['flow']["T"], dtype=float)  # temperature in K
@@ -37,7 +40,25 @@ def run_pipeline(config_path: str):
                                                 cfg["wing_geometry"]["xle_half"], cfg["wing_geometry"]["twist_half"], 
                                                 cfg["wing_geometry"]["airfoil"])
     
-    df_wing = run_llt(computation_params_wing['airfoil_CST'], alphas, vels, airflow, computation_params_wing)
+    airfoil_wing = cuKulfanAirfoil(
+                computation_params_wing['airfoil_CST'],
+                device=cfg["device"],        # "cuda", "cpu", or "mps" (mapped in solver)
+                requires_grad=False,  # set True when doing shape optimisation
+                )
+    #df_elevator = run_llt(computation_params_wing['airfoil_CST'], alphas, vels, airflow, computation_params_wing)
+    df_wing = run_llt_cuNF_grid(
+        airfoil_wing, 
+        AoA_grid, 
+        V_inf_grid, 
+        airflow, 
+        computation_params_wing, 
+        n_iter=15,
+        beta=0.40,
+        tol=1e-6,
+        enforce_symmetry=True,
+        device=cfg["device"],
+        model_size=cfg["model_size"]
+        )
 
     alpha_vals_wing = np.sort(df_wing["AoA"].unique())
     vel_vals_wing   = np.sort(df_wing["V_inf"].unique())
@@ -50,8 +71,27 @@ def run_pipeline(config_path: str):
                                                    cfg["elevator_geometry"]["xle_half"], cfg["elevator_geometry"]["twist_half"], 
                                                    cfg["elevator_geometry"]["airfoil"])
     
-    df_elevator = run_llt(computation_params_elevator['airfoil_CST'], alphas, vels, airflow, computation_params_elevator)  
+    airfoil_elevator = cuKulfanAirfoil(
+                computation_params_elevator['airfoil_CST'],
+                device=cfg["device"],        # "cuda", "cpu", or "mps" (mapped in solver)
+                requires_grad=False,  # set True when doing shape optimisation
+            )
 
+    #df_elevator = run_llt(computation_params_elevator['airfoil_CST'], alphas, vels, airflow, computation_params_elevator)  
+    df_elevator = run_llt_cuNF_grid(
+        airfoil_elevator, 
+        AoA_grid, 
+        V_inf_grid, 
+        airflow, 
+        computation_params_elevator, 
+        n_iter=15,
+        beta=0.40,
+        tol=1e-6,
+        enforce_symmetry=True,
+        device=cfg["device"],
+        model_size=cfg["model_size"]
+        )
+    
     alpha_vals_elevator = np.sort(df_elevator["AoA"].unique())
     vel_vals_elevator   = np.sort(df_elevator["V_inf"].unique())
     CL_grid_elevator = df_elevator.pivot(index="AoA", columns="V_inf", values="CL").values
@@ -67,15 +107,18 @@ def run_pipeline(config_path: str):
     save_surface_csv(outdir/"raw_surfaces/cm_elevator.csv", alpha_vals_elevator, vel_vals_elevator, CM_grid_elevator, "CM")
 
     # Train RGI cubic & save
-    RGISurface(alpha_vals_wing, vel_vals_wing, CL_grid_wing).to_npz(outdir/"models/cl_wing.npz")
-    RGISurface(alpha_vals_wing, vel_vals_wing, CD_grid_wing).to_npz(outdir/"models/cd_wing.npz")
-    RGISurface(alpha_vals_wing, vel_vals_wing, CM_grid_wing).to_npz(outdir/"models/cm_wing.npz")
-    RGISurface(alpha_vals_elevator, vel_vals_elevator, CL_grid_elevator).to_npz(outdir/"models/cl_elevator.npz")
-    RGISurface(alpha_vals_elevator, vel_vals_elevator, CD_grid_elevator).to_npz(outdir/"models/cd_elevator.npz")
-    RGISurface(alpha_vals_elevator, vel_vals_elevator, CM_grid_elevator).to_npz(outdir/"models/cm_elevator.npz")
+    # RGISurface(alpha_vals_wing, vel_vals_wing, CL_grid_wing).to_npz(outdir/"models/cl_wing.npz")
+    # RGISurface(alpha_vals_wing, vel_vals_wing, CD_grid_wing).to_npz(outdir/"models/cd_wing.npz")
+    # RGISurface(alpha_vals_wing, vel_vals_wing, CM_grid_wing).to_npz(outdir/"models/cm_wing.npz")
+    # RGISurface(alpha_vals_elevator, vel_vals_elevator, CL_grid_elevator).to_npz(outdir/"models/cl_elevator.npz")
+    # RGISurface(alpha_vals_elevator, vel_vals_elevator, CD_grid_elevator).to_npz(outdir/"models/cd_elevator.npz")
+    # RGISurface(alpha_vals_elevator, vel_vals_elevator, CM_grid_elevator).to_npz(outdir/"models/cm_elevator.npz")
 
     return {
         "alpha_bounds": (float(alphas.min()), float(alphas.max())),
+        "alpha_steps":  float(cfg['flow']['alpha_step']),
         "vel_bounds":   (float(vels.min()), float(vels.max())),
+        "vel_steps":    float(cfg['flow']['vel_step']),
+        "csv_dir":      str(outdir/"raw_surfaces"),
         "models_dir":   str(outdir/"models")
     }
