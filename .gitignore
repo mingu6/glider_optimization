@@ -1,2 +1,5 @@
 experiments/*
 *.gif
+*.pyc
+*.log
+*.yaml
