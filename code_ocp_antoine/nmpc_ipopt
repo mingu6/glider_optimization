@@ -1,0 +1,582 @@
+import casadi as cs
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from live_plot import live_plot
+
+
+def C_L(alpha):
+    return 2 * cs.sin(alpha) * cs.cos(alpha)
+
+def C_D(alpha):
+    return 2 * cs.sin(alpha) ** 2
+
+def C_M(alpha):
+    return -C_L(alpha) * 0.25
+
+def mc_to_wcom(l_w):
+    return l_w + 0.003
+
+def in_terminal_region(x, x_target=None, Q_N=None, delta=None):
+    xl = np.array([-0.05, 0.0, np.pi/8, -np.pi/3, 0.0, -2.0, -np.inf])
+    xu = np.array([0.05, 0.05, np.pi/2,  np.pi/8, 2.0,  0.0,  np.inf])
+
+    x = np.array(x)
+    return np.all(x >= xl) and np.all(x <= xu)
+
+def compute_adaptive_dt(x, x_target, dt_min, dt_max, P, alpha=0.05):
+    dx = np.array(x) - np.array(x_target)
+    dist = dx.T @ P @ dx
+    return dt_max - (dt_max - dt_min) * np.exp(-alpha * dist)
+
+def energy(state, params):
+    # state = [x, z, theta, phi, xdot, zdot, thetadot]
+    # params = [..., m, g, I]
+    x      = state[0]
+    z      = state[1]
+    theta  = state[2]
+    phi    = state[3]
+    xdot   = state[4]
+    zdot   = state[5]
+    thetadot = state[6]
+    *_, m, g, I = params
+    E_pot   = m*g*z
+    E_trans = 0.5*m*(xdot**2 + zdot**2)
+    E_rot   = 0.5*I*thetadot**2
+    return E_pot + E_trans + E_rot
+
+def build_dynamic_model(params):
+    x = cs.SX.sym("x")
+    z = cs.SX.sym("z")
+    theta = cs.SX.sym("theta")
+    phi = cs.SX.sym("phi")
+    xdot = cs.SX.sym("xdot")
+    zdot = cs.SX.sym("zdot")
+    thetadot = cs.SX.sym("thetadot")
+    phidot = cs.SX.sym("phidot")
+    states = cs.vertcat(x, z, theta, phi, xdot, zdot, thetadot)
+    controls = phidot
+    l_w_i, l_w_f, l, l_e, l_f, m_w, m_e, m_f, rho, S_w, S_e, m, g, I = params
+    l_w_m = (l_w_i + l_w_f) / 2
+    com_w = l_w_m + mc_to_wcom(l_w_m)
+    com_e = l + l_e
+    com_f = l_f
+    com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
+
+    x_wdot = xdot + l_w_m * thetadot * cs.sin(theta)
+    z_wdot = zdot - l_w_m * thetadot * cs.cos(theta)
+    x_edot = xdot + l * thetadot * cs.sin(theta) + l_e * (thetadot + phidot) * cs.sin(theta + phi)
+    z_edot = zdot - l * thetadot * cs.cos(theta) - l_e * (thetadot + phidot) * cs.cos(theta + phi)
+
+    c = cs.fabs(l_w_f - l_w_i)
+    alpha_w = theta - cs.atan2(z_wdot, x_wdot)
+    v_w = cs.sqrt(x_wdot**2 + z_wdot**2 + 1e-8)
+    F_Lw = C_L(alpha_w) * cs.vertcat(-z_wdot, x_wdot)
+    F_Dw = C_D(alpha_w) * cs.vertcat(-x_wdot, -z_wdot)
+    F_w = 0.5 * rho * v_w * S_w * (F_Lw + F_Dw)
+    M_w = 0.5 * rho * v_w**2 * S_w * c * C_M(alpha_w)
+
+    alpha_e = theta + phi - cs.atan2(z_edot, x_edot)
+    v_e = cs.sqrt(x_edot**2 + z_edot**2 + 1e-8)
+    F_Le = C_L(alpha_e) * cs.vertcat(-z_edot, x_edot)
+    F_De = C_D(alpha_e) * cs.vertcat(-x_edot, -z_edot)
+    F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
+    M_e = 0.5 * rho * v_e**2 * S_e * c * C_M(alpha_e)
+
+    r_w = [(- com_w + com_a) * cs.cos(theta), (- com_w + com_a) * cs.sin(theta)]
+    r_e = [(- com_e + com_a) * cs.cos(theta), (- com_e + com_a) * cs.sin(theta)]
+    tau_w = r_w[1] * F_w[0] - r_w[0] * F_w[1] + M_w
+    tau_e = r_e[1] * F_e[0] - r_e[0] * F_e[1] + M_e
+    thetaddot = -1. / I * (tau_w + tau_e)
+
+    xddot = 1. / m * (F_w[0] + F_e[0])
+    zddot = 1. / m * (F_w[1] + F_e[1]) - g
+
+    return cs.Function('f', [states, controls], [cs.vertcat(xdot, zdot, thetadot, phidot, xddot, zddot, thetaddot)])
+
+def simulate_forward(f, x, u, dt, method="casadi"):
+    if method == "scipy":
+        def rhs(t, x_np):
+            x_cs = cs.DM(x_np)
+            u_cs = cs.DM(u)
+            dx = f(x_cs, u_cs)
+            return np.array(dx).squeeze()
+
+        sol = solve_ivp(rhs, [0, dt], x, method="RK45", atol=1e-9, rtol=1e-6)
+        return sol.y[:, -1]
+
+    elif method == "casadi":
+        k1 = f(x, u)
+        k2 = f(x + dt/2 * k1, u)
+        k3 = f(x + dt/2 * k2, u)
+        k4 = f(x + dt * k3, u)
+        return np.array(x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)).squeeze()
+
+    else:
+        raise ValueError("Unknown integration method")
+    
+def rk4_symbolic(f, x, u, dt):
+    k1 = f(x, u)
+    k2 = f(x + dt/2 * k1, u)
+    k3 = f(x + dt/2 * k2, u)
+    k4 = f(x + dt * k3, u)
+    return x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+
+
+def solve_ocp_ipopt(
+    f, x0, T_horizon, N, Q, Q_N, R,
+    uk_init=None, xk_init=None, x_target=None,
+    h_min=1e-4, h_max=0.1, h_init=None, cost_L1_stage = False, cost_L1_term = False,
+    use_terminal_constraint=False,
+    params = None, use_fixed_h=False, fixed_h_value=None,
+    energy_cost = False, time_cost = False, S=1e-4
+):
+    nx = len(x0)
+    # default target is zero state if not provided (avoids cs.DM(None) later)
+    if x_target is None:
+        x_target = np.zeros(nx)
+    w, w0, lbw, ubw, g, lbg, ubg = [], [], [], [], [], [], []
+    # var_map keeps track of decision blocks: (name, size, tag)
+    # tag in {'h','state','control','slack_state','slack_u', ...}
+    var_map = []
+    J = 0
+
+    # --- Decision variable: timestep h ---
+    if use_fixed_h:
+        # --- Fixed time step ---
+        h = fixed_h_value if fixed_h_value is not None else (h_min + h_max) / 2
+    else:
+        h_list = [cs.MX.sym(f"h_{k}") for k in range(N)]
+        for h in h_list:
+            w += [h]
+            var_map.append((f"h_{len(var_map)}", 1, 'h'))
+            w0 += [h_init if h_init is not None else 0.5 * (h_max + h_min)]
+            lbw += [h_min]
+            ubw += [h_max]
+        # enforce all h_t equal: h_t - h_{t-1} = 0
+        for k in range(1, N):
+            g += [h_list[k] - h_list[k-1]]
+            lbg += [0.0]
+            ubg += [0.0]
+    # --- Initial state
+    Xk = cs.MX.sym("X_0", nx)
+    w += [Xk]
+    var_map.append(('X_0', nx, 'state'))
+    w0 += list(x0)
+    lbw += list(x0)
+    ubw += list(x0)
+
+    t = 0.0
+    time_log = [t]
+
+    for k in range(N):
+        # Control variable
+        Uk = cs.MX.sym(f"U_{k}", 1)
+        w += [Uk]
+        var_map.append((f'U_{k}', 1, 'control'))
+        w0 += [uk_init[k] if uk_init is not None else 0.0]
+        lbw += [-13.0]
+        ubw += [13.0]
+
+        # --- Select the correct time step variable ---
+        if not use_fixed_h:
+            stage_h = h_list[k]
+        else:
+            stage_h = h
+
+        # Next state variable
+        Xnext = cs.MX.sym(f"X_{k+1}", nx)
+        w += [Xnext]
+        var_map.append((f'X_{k+1}', nx, 'state'))
+        if xk_init is not None:
+            w0 += list(xk_init[k+1])
+        else:
+            w0 += list(x0)
+        lbw += [-cs.inf]*nx
+        ubw += [cs.inf]*nx
+
+        # --- RK4 integration  ---
+        x_pred = rk4_symbolic(f, Xk, Uk, stage_h)
+        g += [x_pred - Xnext]
+        lbg += [0]*nx
+        ubg += [0]*nx
+
+        # --- Constraints ---
+        g += [Xk[3]]  # phi ∈ [-π/3, +π/8]
+        lbg += [-np.pi / 3]
+        ubg += [np.pi / 8]
+
+        # --- Stage cost ---
+        if not cost_L1_stage:
+            x_err = Xk - cs.DM(x_target)
+            J += stage_h * (cs.mtimes([x_err.T, Q, x_err]) + R * Uk**2)
+        
+            if energy_cost:
+                energy_weight = 30.0   # tune 
+                cost = energy_weight * energy(Xk, params)
+                J += stage_h* cost   #energy cost
+
+            if time_cost:
+                J += S * stage_h**2   #time cost
+        else:
+            x_err = Xk - cs.DM(x_target)
+            y_state = cs.mtimes(Q, x_err)  # Apply weighting Q
+            eps_x = cs.MX.sym(f"eps_x_{k}", nx)
+            w += [eps_x]
+            var_map.append((f'eps_x_{k}', nx, 'slack_state'))
+            w0 += list(np.ones(nx)*0.1)
+            lbw += [0.0]*nx
+            ubw += [cs.inf]*nx
+
+            # Add linear constraints: -eps_x <= Q(x - x_target) <= eps_x
+            g += [y_state - eps_x]
+            lbg += [-cs.inf]*nx
+            ubg += [0]*nx
+            g += [-y_state - eps_x]
+            lbg += [-cs.inf]*nx
+            ubg += [0]*nx
+
+            y_u = R * Uk
+            eps_u = cs.MX.sym(f"eps_u_{k}", 1)
+            w += [eps_u]
+            var_map.append((f'eps_u_{k}', 1, 'slack_u'))
+            w0 += [0.1]
+            lbw += [0.0]
+            ubw += [cs.inf]
+
+            g += [y_u - eps_u]
+            lbg += [-cs.inf]
+            ubg += [0.0]
+            g += [-y_u - eps_u]
+            lbg += [-cs.inf]
+            ubg += [0.0]
+
+            #add everything
+            J += h * (cs.sum1(eps_x) + cs.sum1(eps_u))
+
+        Xk = Xnext
+        time_log.append(t + h)
+        t += h
+
+    # --- Terminal stage ---
+    if use_terminal_constraint:
+        # Hard terminal box constraint instead of cost
+        xl = np.array([-0.005, 0.0, np.pi/8, -np.pi/3, 0.0, -2.0, -cs.inf])
+        xu = np.array([0.005, 0.005, np.pi/2,  np.pi/8, 2.0,  0.0,  cs.inf])
+
+        # Add elementwise constraints on final state Xk
+        g += [Xk]
+        lbg += list(xl)
+        ubg += list(xu)
+    else:
+        if not cost_L1_term:
+            if x_target is not None:
+                x_err = Xk - cs.DM(x_target)
+                J += cs.mtimes([x_err.T, Q_N, x_err])  # L2
+        else:
+            if x_target is not None:
+                x_err = Xk - cs.DM(x_target)
+
+                # --- Define slack variables (ε ≥ 0) ---
+                eps_N = cs.MX.sym("eps_N", nx)
+                w += [eps_N]
+                var_map.append(('eps_N', nx, 'slack_state'))
+                w0 += list(np.ones(nx) * 0.05)
+                lbw += [0.0] * nx
+                ubw += [cs.inf] * nx
+                # --- Soft terminal region constraints: -ε <= x_err <= ε ---
+                g += [x_err - eps_N]
+                lbg += [-cs.inf] * nx
+                ubg += [0.0] * nx
+                g += [-x_err - eps_N]
+                lbg += [-cs.inf] * nx
+                ubg += [0.0] * nx
+
+                # --- Define ε-weights ---
+                # Option 1: same weight for all components (initial tuning, did not work)
+                #w_eps = 50.0
+
+                # Option 2: per-state weights 
+                w_eps = np.array([400, 400, 1/9, 1/9, 1, 1, 1/9])
+
+                # --- Terminal cost: quadratic + linear on slacks ---
+                J += cs.mtimes([x_err.T, 1e-1*Q_N, x_err]) + cs.dot(w_eps, eps_N)
+
+    # --- NLP setup ---
+    nlp = {"f": J, "x": cs.vertcat(*w), "g": cs.vertcat(*g)}
+    solver = cs.nlpsol("solver", "ipopt", nlp)
+
+    # --- Solve NLP ---
+    sol = solver(x0=w0, lbx=lbw, ubx=ubw, lbg=lbg, ubg=ubg)
+    w_opt = np.array(sol["x"]).flatten()
+
+    # --- Try legacy-offset parsing first (to preserve exact L2 behavior) ---
+    wlen = len(w_opt)
+    expected_flat_len = 1 + N * (nx + 1) + nx  # h + X0 + N*(U_k + X_{k+1})
+    legacy_pattern = False
+    try:
+        # check var_map tags follow ['h','state', ('control','state')*N]
+        if len(var_map) == 2 + 2 * N and var_map[0][2] == 'h' and var_map[1][2] == 'state':
+            ok = True
+            for k in range(N):
+                if var_map[2 + 2 * k][2] != 'control' or var_map[2 + 2 * k + 1][2] != 'state':
+                    ok = False
+                    break
+            if ok and wlen == expected_flat_len:
+                legacy_pattern = True
+    except Exception:
+        legacy_pattern = False
+
+    if legacy_pattern:
+        # Use the old offset-based extraction to preserve exact behavior
+        offset = 1
+        X_seq = []
+        U_seq = []
+        for k in range(N):
+            start = offset + k * (nx + 1)
+            X_seq.append(w_opt[start:start + nx])
+            U_seq.append(w_opt[start + nx])
+        # final state
+        final_start = offset + N * (nx + 1)
+        X_seq.append(w_opt[final_start:final_start + nx])
+        X_seq = np.array(X_seq)
+        U_seq = np.array(U_seq)
+        h_opt = float(w_opt[0])
+        return X_seq, U_seq, h_opt, time_log
+
+    # Fallback: parse using var_map (works for L1/L2 and any extra variables)
+    pos = 0
+    X_seq = []
+    U_seq = []
+    h_opt = None
+    for name, size, tag in var_map:
+        block = w_opt[pos:pos+size]
+        if tag == 'h':
+            h_opt = float(block[0])
+        elif tag == 'state':
+            X_seq.append(np.array(block).reshape(-1))
+        elif tag == 'control':
+            U_seq.append(float(block[0]))
+        # otherwise ignore slacks or other vars for plotting
+        pos += size
+
+    X_seq = np.array(X_seq)
+    U_seq = np.array(U_seq)
+    h_opt = h_opt if h_opt is not None else fixed_h_value
+    stats = solver.stats()
+    solver_iter = stats.get("iter_count", np.nan)
+    solver_time = stats.get("t_wall_total", np.nan)
+
+    return X_seq, U_seq, h_opt, solver_iter, solver_time
+
+def run_ipopt_mpc():
+    # Model params
+    m = 0.065
+    l_w_i = 0.005
+    l_w_f = 0.015
+    l = 0.26
+    l_e = 0.02
+    rho = 1.2041
+    S_w = 0.086
+    S_e = 0.022
+    m_w = 0.6 * m * S_w / (S_w + S_e)
+    m_e = 0.6 * m * S_e / (S_w + S_e)
+    m_f = 0.4 * m
+    l_w = 0.5 * (l_w_i + l_w_f)
+    l_f = -(l_w * m_w + (l - l_e) * m_e) / m_f
+    g = 9.81
+    I = m_w * l_w ** 2 + m_e * (l + l_e) ** 2 + m_f * l_f ** 2
+    params = [l_w_i, l_w_f, l, l_e, l_f, m_w, m_e, m_f, rho, S_w, S_e, m, g, I]
+
+    f = build_dynamic_model(params)
+
+    x0 = [-3.5, 0.1 , 0. , 0., 7., 0. , 0.]   #x=-8.5 xdot too high, x=-10.5 xz = (0,0) not reached
+    x_target = np.zeros(7) 
+    dt_max = 0.2  # default time step
+    dt_min = 1e-5  # smallest time step allowed
+
+    P = np.diag([1, 1, 1, 1, 1, 1, 1])  # can change which variables to consider
+    T_horizon = 2.5
+    T_total = 2.5           # Total simulation time
+    t = 0.0                 # Current simulation time
+    step = 0                # Iteration counter
+    time_log = [t]          # Store time for plotting
+
+    # Cost weights
+    # x, z, theta, phi, xdot, zdot, thetadot
+    #Q = np.diag([0., 0., 0., 0., 0., 0., 0.])  #np.diag([15, 30, 30, 1, 10, 20, 5])  
+    Q = np.diag([5., 5., 0., 0., 1., 1., 0.])   
+    Q_N = np.diag([400, 400, 1/9, 1/9, 1, 1, 1/9]) #80*np.diag([10., 10., 10., 0., 1., 1., 1.]) #np.diag([150, 200, 100, 1, 150, 150, 50])  # Final cost: strongly penalize z and all velocities
+    R = 0.1 # 0.1 #5. #10  # Penalize control
+
+    x_traj = [x0]
+    u_traj = []
+    xk_init = None
+    uk_init = None
+    h_init = None
+
+    delta = 1.0
+    N = 200  #100
+
+    solver_iters = []
+    solver_times = []
+
+
+    while (t < T_total and step<1):
+        #print(f"MPC step {step}/{steps}")
+        #dt = compute_adaptive_dt(x0, x_target, dt_min, dt_max, P, alpha=2.0)  #now a decision variable
+        X_opt, U_opt, h_opt, solver_iter, solver_time = solve_ocp_ipopt(
+            f=f, x0=x0, T_horizon=T_horizon, N=N,
+            Q=Q, Q_N=Q_N, R=R,
+            uk_init=uk_init, xk_init=xk_init, x_target=x_target,
+            h_min=dt_min, h_max=dt_max, h_init=None, cost_L1_stage=False, cost_L1_term=True,
+            use_terminal_constraint=False,
+            params = params, use_fixed_h=True, fixed_h_value=0.005, 
+            energy_cost = False, time_cost = True, S=1e-4   
+        )
+        u0 = U_opt[0]
+        u_traj.append(u0)
+        solver_iters.append(solver_iter)
+        solver_times.append(solver_time)
+        print("h_opt =", h_opt)
+
+        # Save IPOPT warm-start trajectories for ACADOS
+        np.save("X_ipopt_L1.npy", np.array(X_opt))
+        np.save("U_ipopt_L1.npy", np.array(U_opt))
+
+        print("Saved IPOPT warm start as 'X_ipopt.npy' and 'U_ipopt.npy'.")
+
+        # Build local predicted time vector for current horizon
+        t_horizon = np.linspace(t, t + N * h_opt, N)   #N control moves
+
+        # Alpha fades with iteration: early = faint, recent = bright
+        alpha_val = 0.6
+
+        # x–z trajectory
+        plt.figure(1)
+        plt.plot(X_opt[:, 0], X_opt[:, 1], color="blue", alpha=alpha_val, label=None)
+        plt.xlabel("x")
+        plt.ylabel("z")
+        #plt.title("Predicted x–z trajectories per MPC iteration")
+        plt.grid(True)
+
+        # x_dot–z_dot trajectory
+        plt.figure(2)
+        plt.plot(X_opt[:, 4], X_opt[:, 5], color="green", alpha=alpha_val, label=None)
+        plt.xlabel("x_dot")
+        plt.ylabel("z_dot")
+        #plt.title("Predicted ẋ–ż trajectories per MPC iteration")
+        plt.grid(True)
+
+        # Control input trajectory
+        plt.figure(3)
+        plt.plot(t_horizon, U_opt, color="red", alpha=alpha_val, label=None)
+        plt.xlabel("time [s]")
+        plt.ylabel("phidot [rad/s]")
+        #plt.title("Predicted control trajectories per MPC iteration")
+        plt.grid(True)
+
+        # Simulate one step forward
+        x_next = simulate_forward(f, x0, [u0], h_opt, method="casadi")
+        x_traj.append(x_next)
+        time_log.append(t + h_opt)
+
+        # Warm start shifting
+        x0 = x_next
+        uk_init = np.roll(U_opt, -1)
+        uk_init[-1] = uk_init[-2]
+        xk_init = X_opt
+        h_init = h_opt
+
+        # --- Terminal region check (MIT paper criterion) ---
+        value = (x_next - x_target).T @ Q_N @ (x_next - x_target)
+        print(f"Step {step}: terminal metric = {value:.3e}")
+        if in_terminal_region(x_next, x_target, Q_N, delta):
+            print(f"✅ Terminal region reached at step {step}, stopping MPC loop.")
+            break
+
+        t += h_opt
+        step += 1
+
+    x_traj = np.array(x_traj)
+    u_traj = np.array(u_traj)
+
+    # --- Save progressive transparency figures ---
+    plt.figure(1)
+    plt.tight_layout()
+    plt.savefig("xz_trajectories_progress_Qnot0_L2term_hard_time.png", dpi=150)
+
+    plt.figure(2)
+    plt.tight_layout()
+    plt.savefig("xdot_zdot_trajectories_progress_Qnot0_L2term_hard_time.png", dpi=150)
+
+    plt.figure(3)
+    plt.tight_layout()
+    plt.savefig("control_trajectories_progress_Qnot0_L2term_hard_time.png", dpi=150)
+
+    plt.close('all')
+
+
+    # --- State trajectory plot ---
+    state_labels = ['x', 'z', 'theta', 'phi', 'xdot', 'zdot', 'thetadot']
+    plt.figure(figsize=(10, 6))
+    for i in range(x_traj.shape[1]):
+        plt.plot(time_log, x_traj[:, i], label=state_labels[i])
+    plt.title("State Trajectory")
+    plt.xlabel("Time [s]")
+    plt.ylabel("States")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig("state_trajectory_Qnot0_L2term_hard_time.png", dpi=150)
+    plt.close()
+
+
+    # --- Control trajectory plot ---
+    plt.figure()
+    plt.plot(time_log[:-1], u_traj, label="phidot")
+    plt.title("Control Trajectory")
+    plt.xlabel("Time [s]")
+    plt.ylabel("phidot [rad/s]")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig("control_trajectory_Qnot0_L2term_hard_time.png", dpi=150)
+    plt.close()
+
+    # --- Solver performance histograms ---
+    plt.figure()
+    plt.hist(solver_iters, bins=20, color='skyblue', edgecolor='black')
+    plt.title("Histogram of IPOPT Iteration Counts per MPC Step")
+    plt.xlabel("Number of iterations")
+    plt.ylabel("Frequency")
+    plt.tight_layout()
+    plt.savefig("solver_iterations_hist_Qnot0_L2term_hard_time.png", dpi=150)
+    plt.close()
+
+    plt.figure()
+    plt.hist(solver_times, bins=20, color='lightgreen', edgecolor='black')
+    plt.title("Histogram of IPOPT Solve Times per MPC Step")
+    plt.xlabel("Solve time [s]")
+    plt.ylabel("Frequency")
+    plt.tight_layout()
+    plt.savefig("solver_times_hist_Qnot0_L2term_hard_time.png", dpi=150)
+    plt.close()
+
+
+    print("✅ Plots saved to disk as PNG files.")
+
+    # Build interleaved state+control sequence: for each timestep, [x(7), u(1)]
+    flat_w_opt = []
+    # X_opt contains N+1 states (including terminal); U_opt contains N controls
+    for k in range(len(U_opt)):
+        flat_w_opt.extend(X_opt[k].tolist())
+        flat_w_opt.append(U_opt[k])
+    # append final state (7 values) to keep consistency with some callers
+    flat_w_opt.extend(X_opt[-1].tolist())
+
+    #live_plot(flat_w_opt, x_target, penalty_weights=np.diag(Q_N))
+
+
+if __name__ == '__main__':
+    run_ipopt_mpc()
