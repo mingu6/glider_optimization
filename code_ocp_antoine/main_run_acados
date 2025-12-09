@@ -1,0 +1,231 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# --- Import modules 1, 2, 3 ---
+from model_perching import build_perching_model, get_default_params
+from solver_build_acados import (
+    create_acados_solver,
+    load_ipopt_warm_start,
+    warm_start_acados,
+    run_closed_loop
+)
+
+# ============================================================
+#  MAIN SCRIPT FOR RUNNING ACADOS CLOSED-LOOP MPC
+# ============================================================
+
+# ---------------------------------------------------------
+# Plot 1 — Control input vs time
+# ---------------------------------------------------------
+def plot_ipopt_control(U_ipopt, dt=0.02, savepath="ipopt_control.png"):
+    N = U_ipopt.shape[0]
+    t = np.arange(N) * dt
+
+    plt.figure(figsize=(8,4))
+    plt.plot(t, U_ipopt, linewidth=2)
+    plt.title("IPOPT Control Input")
+    plt.xlabel("time [s]")
+    plt.ylabel("control")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(savepath, dpi=200)
+    plt.close()
+    print(f"Saved: {savepath}")
+
+
+# ---------------------------------------------------------
+# Plot 2 — All IPOPT states vs time
+# ---------------------------------------------------------
+def plot_ipopt_states(X_ipopt, dt=0.02, savepath="ipopt_states.png"):
+    N = X_ipopt.shape[0]
+    t = np.arange(N) * dt
+
+    plt.figure(figsize=(12,6))
+    labels = ["x", "z", "theta", "phi", "xdot", "zdot", "thetadot"]
+
+    for i in range(X_ipopt.shape[1]):
+        plt.plot(t, X_ipopt[:, i], label=labels[i], linewidth=2)
+
+    plt.title("IPOPT State Trajectory")
+    plt.xlabel("time [s]")
+    plt.ylabel("states")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(savepath, dpi=200)
+    plt.close()
+    print(f"Saved: {savepath}")
+
+
+# ---------------------------------------------------------
+# Plot 3 — Spatial trajectory z(x)
+# ---------------------------------------------------------
+def plot_ipopt_spatial(X_ipopt, savepath="ipopt_xz.png"):
+    x = X_ipopt[:, 0]
+    z = X_ipopt[:, 1]
+
+    plt.figure(figsize=(7,5))
+    plt.plot(x, z, linewidth=2)
+    plt.title("IPOPT Spatial Trajectory z(x)")
+    plt.xlabel("x [m]")
+    plt.ylabel("z [m]")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(savepath, dpi=200)
+    plt.close()
+    print(f"Saved: {savepath}")
+
+def main():
+
+    # --------------------------------------------------------
+    # 1) Load model + parameters
+    # --------------------------------------------------------
+    params = get_default_params()
+    model = build_perching_model(params)
+
+    nx = model.x.size()[0]
+    nu = model.u.size()[0]
+
+    # Initial state (same as IPOPT version)
+    x0 = np.array([-3.5, 0.1, 0., 0., 7., 0., 0.])
+    terminal_cost = "L1"   # choose "L1" or "L2"
+    dt = 0.01
+
+    Q = np.diag([5., 5., 0., 0., 1., 1., 0.])
+    #Q_N = np.diag([400, 400, 1/9, 1/9, 1, 1, 1/9])
+    Q_N = np.diag([20,20,0.2,0.2,1,1,0.2])
+
+
+    # --------------------------------------------------------
+    # 2) Load IPOPT warm-start (X_ipopt.npy, U_ipopt.npy)
+    # --------------------------------------------------------
+    print("Loading IPOPT warm start...")
+    if terminal_cost == "L2":
+        X_ipopt = np.load("X_ipopt_L2.npy")
+        U_ipopt = np.load("U_ipopt_L2.npy")
+    else:
+        X_ipopt = np.load("X_ipopt_L1.npy")
+        U_ipopt = np.load("U_ipopt_L1.npy")
+    warm = load_ipopt_warm_start(X_ipopt, U_ipopt)
+
+    # ---------------------------------------------------------
+    # Run all plots
+    # ---------------------------------------------------------
+    plot_ipopt_control(U_ipopt, dt=dt)
+    plot_ipopt_states(X_ipopt, dt=dt)
+    plot_ipopt_spatial(X_ipopt)
+
+    # Horizon settings
+    N = X_ipopt.shape[0] - 1
+    print(N)
+
+    # --------------------------------------------------------
+    # 3) Create ACADOS solver (L2 or L1)
+    # --------------------------------------------------------
+    print(f"Building ACADOS solver ({terminal_cost})...")
+
+    solver, sim_solver = create_acados_solver(
+        model,
+        x0=x0,
+        terminal_cost_type=terminal_cost,
+        N=N,
+        dt=dt, 
+        Q=Q,
+        Q_N=Q_N
+    )
+
+    # --------------------------------------------------------
+    # 4) Warm-start ACADOS with IPOPT solution
+    # --------------------------------------------------------
+    print("Warm-starting ACADOS solver with IPOPT...")
+    warm_start_acados(solver, warm, N)
+
+    # --------------------------------------------------------
+    # 5) Run closed-loop NMPC
+    # --------------------------------------------------------
+    print("Running closed-loop ACADOS MPC...")
+
+    X_cl, U_cl, iter_log, time_log = run_closed_loop(
+        model=model,
+        x0=x0,
+        solver=solver,
+        sim=sim_solver,
+        N=N,
+        dt=dt,
+        max_steps=10,
+        use_shift=True
+    )
+
+    # --------------------------------------------------------
+    # 6) Plots
+    # --------------------------------------------------------
+
+    # --- State trajectory (time domain) ---
+    plt.figure(figsize=(10, 6))
+    labels = ['x', 'z', 'theta', 'phi', 'xdot', 'zdot', 'thetadot']
+    t_vec = np.arange(len(X_cl)) * dt
+    for i in range(nx):
+        plt.plot(t_vec, X_cl[:, i], label=labels[i])
+    plt.legend()
+    plt.xlabel("time [s]")
+    plt.ylabel("states")
+    plt.title("Closed-loop NMPC state trajectory (ACADOS)")
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig("acados_states_L1.png", dpi=150)
+
+    # --- Control ---
+    plt.figure()
+    t_u = np.arange(len(U_cl)) * dt
+    plt.plot(t_u, U_cl, label="phidot")
+    plt.xlabel("time [s]")
+    plt.ylabel("control")
+    plt.title("Closed-loop control input (ACADOS)")
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig("acados_control_L1.png", dpi=150)
+
+    # --- Spatial trajectory z(x) ---
+    plt.figure()
+    plt.plot(X_cl[:, 0], X_cl[:, 1], linewidth=2)
+    plt.xlabel("x [m]")
+    plt.ylabel("z [m]")
+    plt.title("Closed-loop spatial trajectory z(x) (ACADOS)")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig("acados_xz_L1.png", dpi=150)
+
+    # --- Velocity trajectory zdot(xdot) ---
+    plt.figure()
+    plt.plot(X_cl[:, 4], X_cl[:, 5], linewidth=2)
+    plt.xlabel("xdot [m/s]")
+    plt.ylabel("zdot [m/s]")
+    plt.title("Closed-loop velocity trajectory zdot(xdot) (ACADOS)")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig("acados_xdot_zdot_L1.png", dpi=150)
+
+
+    # --- Iteration histogram ---
+    plt.figure()
+    plt.hist(iter_log, bins=15, color="skyblue", edgecolor="black")
+    plt.xlabel("SQP iterations")
+    plt.ylabel("frequency")
+    plt.title("ACADOS SQP iteration count")
+    plt.tight_layout()
+    plt.savefig("acados_iter_hist_L1.png", dpi=150)
+
+    # --- Solve time histogram ---
+    plt.figure()
+    plt.hist(time_log, bins=15, color="lightgreen", edgecolor="black")
+    plt.xlabel("total solver time [s]")
+    plt.ylabel("frequency")
+    plt.title("ACADOS solver time per MPC step")
+    plt.tight_layout()
+    plt.savefig("acados_time_hist_L1.png", dpi=150)
+
+    print("✅ Finished. All results saved.")
+
+
+if __name__ == "__main__":
+    main()
