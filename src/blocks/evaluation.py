@@ -13,15 +13,15 @@ class Evaluation(Block):
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         fn = downstream_info["reduced_dynamic_fn"]
         
-        self.alpha_new = torch.tensor([-5.0])
-        self.Re_new    = torch.tensor([1.0e6])
+        self.alpha_new = torch.tensor([0.0])
+        self.Re_new    = torch.tensor([1.0e4])
 
         pred = fn(self.alpha_new, self.Re_new)
 
         self.last_CL = pred["CL"][0,0]  
         self.last_CD = pred["CD"][0,0]
 
-        obj = self.last_CL / self.last_CD
+        obj = self.last_CD
 
         return {"objective": obj}
     
@@ -29,7 +29,7 @@ class Evaluation(Block):
         dCL = 1.0 / self.last_CD
         dCD = -(self.last_CL / (self.last_CD * self.last_CD))
         return {
-            "dJ_df": torch.tensor([dCL, dCD, 0]),
+            "dJ_df": torch.tensor([[0., 1., 0.]]),
             "alpha": self.alpha_new,
             "Re": self.Re_new
         }

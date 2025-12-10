@@ -10,6 +10,7 @@ class RunConfig(BaseModel):
     max_outer_iters: int = 50
     
 class AirfoilConfig(BaseModel):
+    lr: float = 1e-2
     upper_initial_weights: np.ndarray = Field(
         default_factory=lambda: np.array([0.1, 0.15, 0.2, 0.15, 0.1, 0.05, 0.02, 0.01])
     )

@@ -3,6 +3,8 @@ from .config import Config
 from .blockBase import Block
 from .blocks import Airfoil, NeuralFoilSampling, ReducedModel, Evaluation
 import logging
+import matplotlib
+import matplotlib.pyplot as plt
 
 class Runner:
     def __init__(self, config: Config):
@@ -14,9 +16,10 @@ class Runner:
         self.blocks : Dict[str, Block] = {
             "Airfoil": Airfoil(config),
             "NeuralFoilSampling": NeuralFoilSampling(config),
-            "ReducedModel": ReducedModel(config),
-            "Evaluation": Evaluation(config)
+            #"ReducedModel": ReducedModel(config),
+            #"Evaluation": Evaluation(config)
         }
+        self.objective_evolution = []
         self.setup_environment()
 
     def setup_environment(self):
@@ -35,8 +38,9 @@ class Runner:
             self.logger.info(f"Iteration {iteration + 1}/{num_iterations}")
             self.forward_pass()
             self.backward_pass()
-            self.blocks["Airfoil"].plot()
-
+        
+        self.blocks["Airfoil"].save_gif(fps=5)
+        self.plot_objective()
         self.logger.info("Runner finished")
         
     def checkpoint_on_interrupt(): ... # TODO
@@ -50,7 +54,9 @@ class Runner:
             self.logger.debug("Forward block "+block_name)
             propagationDict = block.forward(propagationDict)
         
-        print(propagationDict)
+        obj = propagationDict["objective"]
+        self.objective_evolution.append(obj.item() if hasattr(obj, "item") else obj)
+        
         self.logger.debug("Outer loop forward pass completed")
 
     def backward_pass(self):
@@ -62,3 +68,13 @@ class Runner:
             propagationDict = block.backward(propagationDict)
         
         self.logger.debug("Outer loop backward pass completed")
+
+    def plot_objective(self):
+        matplotlib.use("TkAgg")
+        plt.figure()
+        plt.plot(self.objective_evolution)
+        plt.xlabel("Iteration")
+        plt.ylabel("Objective")
+        plt.title("Optimization Progress")
+        plt.grid(True)
+        plt.show()

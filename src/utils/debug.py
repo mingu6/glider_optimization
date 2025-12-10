@@ -1,5 +1,13 @@
 import torch
 
+def debug_nan_tensor(name, x):
+    if torch.isnan(x).any():
+        print(f"NaN detected in {name}")
+    if torch.isinf(x).any():
+        print(f"Inf detected in {name}")
+    print(f"{name} stats -> min: {x.min().item()}, max: {x.max().item()}, mean: {x.mean().item()}")
+
+
 def check_tensor_debug(x, name=None, print_stats=True):
 
     has_nan = torch.isnan(x).any().item()
