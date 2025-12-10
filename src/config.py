@@ -52,6 +52,7 @@ class ReducedModelConfig(BaseModel):
     l2_reg: float = 0.5
 
 class IOConfig(BaseModel):
+    gif_fps: int = 5
     checkpoint_dir: str
     metrics: list[str] = Field(default_factory=list)
     run_name: str = "run"

@@ -116,6 +116,7 @@ class Airfoil(Block):
             ha="left"
         )
         
+        ax.axis("off")
         ax.set_aspect(1.0, adjustable="datalim")
         
         fig.canvas.draw()

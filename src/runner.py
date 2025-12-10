@@ -39,7 +39,7 @@ class Runner:
             self.forward_pass()
             self.backward_pass()
         
-        self.blocks["Airfoil"].save_gif(fps=5)
+        self.blocks["Airfoil"].save_gif(fps=self.config.io.gif_fps)
         self.plot_objective()
         self.logger.info("Runner finished")
         
