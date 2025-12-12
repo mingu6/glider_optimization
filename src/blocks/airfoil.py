@@ -129,4 +129,4 @@ class Airfoil(Block):
 
     def save_gif(self, filename="airfoil_evolution.gif", fps=10):
         if self.frames:
-            imageio.mimsave(filename, self.frames, fps=fps)
+            imageio.mimsave(filename, self.frames[::fps], fps=1)

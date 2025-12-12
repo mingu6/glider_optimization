@@ -10,7 +10,7 @@ def setup_logging(io_cfg) -> None:
         level=logging.INFO if not io_cfg.debug else logging.DEBUG,
         format="%(asctime)s | %(levelname)s | %(message)s",
         handlers=[
-            logging.FileHandler(log_file),
+            logging.FileHandler(log_file, mode="w"),
             logging.StreamHandler()
         ],
         force=True,

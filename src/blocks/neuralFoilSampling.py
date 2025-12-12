@@ -4,13 +4,15 @@ from ..config import Config
 from ..utils.cu_kulfan_airfoil import cuKulfanAirfoil, get_aero_from_kulfan_parameters_cuda
 from typing import Dict, Any
 import torch
-from math import sqrt
+from math import sqrt   
+import logging
 from ..utils.debug import debug_nan_tensor
 
 class NeuralFoilSampling(Block):
     @override
     def __init__(self, config: Config):
         self.config = config
+        self.logger = logging
         self.device = torch.device(config.run.device)
         nfConfig = self.config.neuralFoilSampling
 
@@ -44,8 +46,6 @@ class NeuralFoilSampling(Block):
             model_size=self.config.neuralFoilSampling.neuralFoil_size,
         )
 
-        return {"objective": -self._last_aero_coeff["CL"].detach().mean() / self._last_aero_coeff["CD"].detach().mean()}
-
         return {
             "alpha": self.alpha_batch,
             "Re": self.Re_batch,
@@ -56,19 +56,53 @@ class NeuralFoilSampling(Block):
 
     @override
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        CD = self._last_aero_coeff["CD"]
         CL = self._last_aero_coeff["CL"]
+        CD = self._last_aero_coeff["CD"]
+        CM = self._last_aero_coeff["CM"]
 
-        loss = -CL / CD
+        if CL.isnan().any():
+            self.logger.critical("⚠️ NaN detected in NeuralFoilSampling feedforward CL")
+        if CD.isnan().any():
+            self.logger.critical("⚠️ NaN detected in NeuralFoilSampling feedforward CD")
+        if CM.isnan().any():
+            self.logger.critical("⚠️ NaN detected in NeuralFoilSampling feedforward CM")
                 
-        vec = torch.ones_like(loss)/loss.shape[0]
+        dJ_dy = upstream_grads["dJ_dy"]
         
         upper = self._last_input["upper_weights"]
         lower = self._last_input["lower_weights"]
         LE = self._last_input["leading_edge_weight"]
         TE = self._last_input["TE_thickness"]        
+                
+        Y = torch.cat([CL, CD, CM], dim=0)
+        grad = torch.autograd.grad(Y, [upper, lower, LE, TE], grad_outputs=dJ_dy.flatten())
         
-        grad = torch.autograd.grad(loss, [upper, lower, LE, TE], grad_outputs=vec)
+        n_nans = 0
+        for i in range(4):
+            n_nans += torch.isnan(grad[i]).sum().item()
+        
+        if n_nans > 0:
+            self.logger.info(f"Total NaNs {n_nans}")
+        
+        grad = [torch.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0) for g in grad]
+        
+        if grad[0].isnan().any():
+            self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[0]")
+        if grad[1].isnan().any():
+            self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[1]")
+        if grad[2].isnan().any():
+            self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[2]")
+        if grad[3].isnan().any():
+            self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[3]")
+            
+        self.logger.info("NF[0]")
+        self.logger.info(grad[0].abs().mean().item())
+        self.logger.info("NF[1]")
+        self.logger.info(grad[1].abs().mean().item())
+        self.logger.info("NF[2]")
+        self.logger.info(grad[2].abs().mean().item())
+        self.logger.info("NF[3]")
+        self.logger.info(grad[3].abs().mean().item())
         
         return {
             "dupper_params": grad[0],

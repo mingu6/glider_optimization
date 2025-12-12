@@ -4,6 +4,7 @@ from ..config import Config
 from typing import Dict, Any
 import torch
 import logging
+import matplotlib.pyplot as plt
 
 class ReducedModel(Block):
     @override
@@ -160,14 +161,29 @@ class ReducedModel(Block):
         Re_scaled = self._scale(Re_stream, self.Re_min, self.Re_max)
         
         X_cheb_stream = self._chebyshev_basis(alpha_scaled, Re_scaled)
+                
+        df_dphi = torch.block_diag(X_cheb_stream, X_cheb_stream, X_cheb_stream)
+        dphi_dy = torch.block_diag(self._normal_lhs, self._normal_lhs, self._normal_lhs)
+        df_dphi = X_cheb_stream
+        dphi_dy = self._normal_lhs
         
-        df_dphi = X_cheb_stream.repeat(3,1)
+        if df_dphi.isnan().any():
+            self.logger.critical(f"⚠️ NaN detected in ReducedModel backward df_dphi")
         
         dJ_df = upstream_grads["dJ_df"]
 
         dJ_dphi = dJ_df @ df_dphi
-        dphi_dy = self._normal_lhs.repeat(1,3)        
+                
+        if dphi_dy.isnan().any():
+            self.logger.critical(f"⚠️ NaN detected in ReducedModel backward dphi_dy")
+            
         dJ_dy = dJ_dphi @ dphi_dy
+        
+        if df_dphi.isnan().any():
+            self.logger.critical(f"⚠️ NaN detected in ReducedModel backward dJ_dy")
+            
+        self.logger.info("Reduced")
+        self.logger.info(dJ_dy.abs().mean().item())
         
         return {"dJ_dy": dJ_dy}
 

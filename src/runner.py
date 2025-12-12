@@ -16,8 +16,8 @@ class Runner:
         self.blocks : Dict[str, Block] = {
             "Airfoil": Airfoil(config),
             "NeuralFoilSampling": NeuralFoilSampling(config),
-            #"ReducedModel": ReducedModel(config),
-            #"Evaluation": Evaluation(config)
+            "ReducedModel": ReducedModel(config),
+            "Evaluation": Evaluation(config)
         }
         self.objective_evolution = []
         self.setup_environment()
@@ -35,6 +35,7 @@ class Runner:
         num_iterations = self.config.run.max_outer_iters
 
         for iteration in range(num_iterations):
+            self.logger.info("="*100)
             self.logger.info(f"Iteration {iteration + 1}/{num_iterations}")
             self.forward_pass()
             self.backward_pass()
@@ -55,6 +56,7 @@ class Runner:
             propagationDict = block.forward(propagationDict)
         
         obj = propagationDict["objective"]
+        self.logger.info(f"Obj = {obj}")
         self.objective_evolution.append(obj.item() if hasattr(obj, "item") else obj)
         
         self.logger.debug("Outer loop forward pass completed")
