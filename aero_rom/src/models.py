@@ -1,37 +1,120 @@
-# ClModel, CdModel, CmModel (__call__ + backward)
+# 3D aerodynamic coefficient blocks built on top of the differentiable
+# CuNFWeissingerLLT model in diff_llt.py.
+#
+# Each class exposes:
+#   - __call__(alpha_deg, V_inf): forward evaluation of the 3D coefficient
+#   - backward(alpha_deg, V_inf): gradients of that coefficient w.r.t. a given
+#       list of parameter tensors (typically the Kulfan weights from
+#       cuKulfanAirfoil, with requires_grad=True).
+#
+# This replaces the earlier RGI-based ClModel/CdModel/CmModel. No interpolation
+# is used here; everything comes from the full LLT + cuNeuralFoil model.
 
-from dataclasses import dataclass
-from typing import Optional, Tuple
-import numpy as np
-from src.interpolation import RGISurface
+from __future__ import annotations
 
-@dataclass
-class _BaseCoeff:
-    surface: RGISurface
-    clip_alpha: Optional[Tuple[float, float]] = None
-    clip_vel:   Optional[Tuple[float, float]] = None
+from typing import Iterable, List
+import torch
+from src.diff_llt import CuNFWeissingerLLT
 
-    def _clip(self, a, v):
-        if self.clip_alpha is not None:
-            a = min(max(a, self.clip_alpha[0]), self.clip_alpha[1])
-        if self.clip_vel is not None:
-            v = min(max(v, self.clip_vel[0]), self.clip_vel[1])
-        return a, v
 
-    def __call__(self, alpha_deg: float, velocity: float) -> float:
-        a, v = self._clip(alpha_deg, velocity)
-        return self.surface(a, v)
+class _Base3DCoeff:
+    """Base wrapper around a CuNFWeissingerLLT model for a single coefficient.
 
-    def backward(self, alpha_deg: float, velocity: float):
+    Parameters
+    ----------
+    llt_model : CuNFWeissingerLLT
+        Differentiable 3D LLT model (torch.nn.Module).
+    coeff_key : str
+        Key in the dict returned by llt_model.forward(...), e.g. "CL", "CD", "CM".
+    params : Iterable[torch.Tensor]
+        List of tensors to differentiate with respect to (e.g. Kulfan weights
+        from cuKulfanAirfoil). All of them should have requires_grad=True.
+    """
+
+    def __init__(
+        self,
+        llt_model: CuNFWeissingerLLT,
+        coeff_key: str,
+        params: Iterable[torch.Tensor],
+    ) -> None:
+        self.llt_model = llt_model
+        self.coeff_key = coeff_key
+        self.params: List[torch.Tensor] = list(params)
+
+    # ---------------------------------------------
+    # Forward: value of the coefficient at (α, V)
+    # ---------------------------------------------
+    def __call__(self, alpha_deg, V_inf):
+        """Evaluate the 3D coefficient at a given (alpha_deg, V_inf).
+
+        Returns
+        -------
+        float
+            If scalar inputs are given, returns a Python float.
+        torch.Tensor
+            If tensor inputs are given, returns a tensor of matching shape.
         """
-        Returns tuple: (dc/dalpha [per degree], dc/dV [per m/s])
-        """
-        a, v = self._clip(alpha_deg, velocity)
-        return self.surface.grad(a, v)
+        out = self.llt_model(alpha_deg, V_inf)[self.coeff_key]
+        # If this is a scalar tensor, return a float for convenience
+        if isinstance(out, torch.Tensor) and out.numel() == 1:
+            return float(out.item())
+        return out
 
-class ClModel(_BaseCoeff): 
-    pass
-class CdModel(_BaseCoeff): 
-    pass
-class CmModel(_BaseCoeff): 
-    pass
+    # ---------------------------------------------
+    # Backward: gradients wrt shape parameters
+    # ---------------------------------------------
+    def backward(self, alpha_deg, V_inf):
+        """Compute gradients of this coefficient wrt the chosen parameters.
+
+        This uses PyTorch autograd under the hood. The gradients are with
+        respect to the tensors given in `params` at construction time.
+
+        Parameters
+        ----------
+        alpha_deg : float or tensor
+        V_inf : float or tensor
+
+        Returns
+        -------
+        grads : list[torch.Tensor]
+            List of gradients dC/dp for each parameter tensor p in `params`.
+            If a parameter is not connected to the coefficient, its gradient
+            will be returned as None.
+        """
+        # Ensure no stale gradients
+        for p in self.params:
+            if p.grad is not None:
+                p.grad.zero_()
+
+        # Forward pass; keep the tensor (do not convert to float here)
+        val = self.llt_model(alpha_deg, V_inf)[self.coeff_key]
+        # If val is a vector, sum to get a scalar objective
+        if isinstance(val, torch.Tensor) and val.ndim > 0:
+            val = val.sum()
+
+        grads = torch.autograd.grad(
+            val,
+            self.params,
+            retain_graph=False,
+            allow_unused=True,
+        )
+
+        return list(grads)
+
+
+class ClModel(_Base3DCoeff):
+    """3D lift coefficient block (CL)."""
+    def __init__(self, llt_model: CuNFWeissingerLLT, params: Iterable[torch.Tensor]) -> None:
+        super().__init__(llt_model, coeff_key="CL", params=params)
+
+
+class CdModel(_Base3DCoeff):
+    """3D drag coefficient block (CD)."""
+    def __init__(self, llt_model: CuNFWeissingerLLT, params: Iterable[torch.Tensor]) -> None:
+        super().__init__(llt_model, coeff_key="CD", params=params)
+
+
+class CmModel(_Base3DCoeff):
+    """3D pitching moment coefficient block (CM)."""
+    def __init__(self, llt_model: CuNFWeissingerLLT, params: Iterable[torch.Tensor]) -> None:
+        super().__init__(llt_model, coeff_key="CM", params=params)
