@@ -35,10 +35,11 @@ class Runner:
         num_iterations = self.config.run.max_outer_iters
 
         for iteration in range(num_iterations):
-            self.logger.info("="*100)
-            self.logger.info(f"Iteration {iteration + 1}/{num_iterations}")
-            self.forward_pass()
-            self.backward_pass()
+            if iteration % self.config.io.log_every == 0:
+                self.logger.info("="*100)
+                self.logger.info(f"Iteration {iteration + 1}/{num_iterations}")
+            self.forward_pass(iteration)
+            self.backward_pass(iteration)
         
         self.blocks["Airfoil"].save_gif(fps=self.config.io.gif_fps)
         self.plot_objective()
@@ -46,22 +47,23 @@ class Runner:
         
     def checkpoint_on_interrupt(): ... # TODO
 
-    def forward_pass(self):
+    def forward_pass(self, it):
         self.logger.debug("Forward pass started")
         
-        propagationDict = {}
+        propagationDict = {"iteration": it}
         
         for block_name, block in self.blocks.items():
             self.logger.debug("Forward block "+block_name)
             propagationDict = block.forward(propagationDict)
         
         obj = propagationDict["objective"]
-        self.logger.info(f"Obj = {obj}")
+        if it % self.config.io.log_every == 0:
+            self.logger.info(f"Objective = {obj}")
         self.objective_evolution.append(obj.item() if hasattr(obj, "item") else obj)
         
         self.logger.debug("Outer loop forward pass completed")
 
-    def backward_pass(self):
+    def backward_pass(self, it):
         self.logger.debug("Backward pass started")
         propagationDict = {}
         

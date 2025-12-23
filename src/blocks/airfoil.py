@@ -32,7 +32,8 @@ class Airfoil(Block):
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        self.plot()
+        if downstream_info.get("iteration", 0) % self.config.io.log_every == 0:
+            self.plot()
         return {
             "upper_weights": self.upper_params, 
             "lower_weights": self.lower_params, 
@@ -46,12 +47,12 @@ class Airfoil(Block):
         self.upper_params.grad = upstream_grads["dupper_params"]
         self.lower_params.grad = upstream_grads["dlower_params"]
         self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
-        self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]
+        self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]        
         
         self.optimizer.step()
 
         with torch.no_grad():
-            self.TE_thickness_param.clamp_(1e-4, 0.5)
+            self.TE_thickness_param.clamp_(1e-4, 0.01)
             min_gap = 0.002
             
             self.upper_params.data = torch.maximum(
@@ -127,6 +128,6 @@ class Airfoil(Block):
         plt.close(fig)
 
 
-    def save_gif(self, filename="airfoil_evolution.gif", fps=10):
+    def save_gif(self, filename="airfoil_evolution.gif", fps=1):
         if self.frames:
-            imageio.mimsave(filename, self.frames[::fps], fps=1)
+            imageio.mimsave(filename, self.frames, fps=fps)

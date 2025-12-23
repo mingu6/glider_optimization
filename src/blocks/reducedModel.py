@@ -59,6 +59,7 @@ class ReducedModel(Block):
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
+        return downstream_info
         alpha = downstream_info["alpha"].reshape(-1)
         Re = downstream_info["Re"].reshape(-1)
 
@@ -153,7 +154,10 @@ class ReducedModel(Block):
 
     @override
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
-        """Compute gradient and Hessian using precomputed derivatives"""        
+        """Compute gradient and Hessian using precomputed derivatives"""       
+        
+        return {"dJ_dy": upstream_grads["dJ_df"]}
+         
         alpha_stream = upstream_grads["alpha"]
         Re_stream = upstream_grads["Re"]
         
@@ -182,9 +186,6 @@ class ReducedModel(Block):
         if df_dphi.isnan().any():
             self.logger.critical(f"⚠️ NaN detected in ReducedModel backward dJ_dy")
             
-        self.logger.info("Reduced")
-        self.logger.info(dJ_dy.abs().mean().item())
-        
         return {"dJ_dy": dJ_dy}
 
         # H = torch.zeros(B, 2, 2, device=self._T_alpha.device)

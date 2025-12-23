@@ -337,7 +337,7 @@ def get_aero_from_kulfan_parameters_cuda(
 
             if (len(layer_indices_to_iterate) != 0):  
                 # swish(x) = x * sigmoid(x)
-                x = x * _sigmoid(x)
+                x = torch.nn.functional.silu(x)
         return x.T
 
     y = net(x)

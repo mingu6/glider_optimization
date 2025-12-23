@@ -39,6 +39,8 @@ class NeuralFoilSamplingConfig(BaseModel):
     Re_min: float = 1e4
     Re_max: float = 6e5
     n_samples: int = 100
+    min_confidence: float = 0.7
+    rho: float = 10.0
 
     @field_validator("neuralFoil_size")
     def check_neuralFoil_size(cls, v):
@@ -52,7 +54,8 @@ class ReducedModelConfig(BaseModel):
     l2_reg: float = 0.5
 
 class IOConfig(BaseModel):
-    gif_fps: int = 5
+    gif_fps: int = 1
+    log_every: int = 1
     checkpoint_dir: str
     metrics: list[str] = Field(default_factory=list)
     run_name: str = "run"

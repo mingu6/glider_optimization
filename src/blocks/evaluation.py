@@ -22,27 +22,33 @@ class Evaluation(Block):
         
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        fn = downstream_info["reduced_dynamic_fn"]
+        #fn = downstream_info["reduced_dynamic_fn"]
 
-        pred = fn(self.alpha_batch, self.Re_batch)
+        #pred = fn(self.alpha_batch, self.Re_batch)
+
+        pred = downstream_info
+        
+        pred["CL"] = pred["CL"].unsqueeze(-1)
+        pred["CD"] = pred["CD"].unsqueeze(-1)
 
         self.last_CL = pred["CL"][:,0].unsqueeze(0)  
         self.last_CD = pred["CD"][:,0].unsqueeze(0)
 
         obj = -self.last_CL/self.last_CD
+        
         return {"objective": obj.mean()}
     
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
         dCL = - 1.0 / self.last_CD        
         dCL /= self.last_CD.shape[1]
+        
         dCD = self.last_CL / (self.last_CD * self.last_CD)
         dCD /= self.last_CD.shape[1]
         
-        grad = torch.cat([dCL, dCD, torch.zeros_like(dCL)])
+        dCM = torch.zeros_like(dCL)        
         
-        self.logger.info("Config")
-        self.logger.info(grad.abs().mean().item())
-        
+        grad = torch.cat([dCL, dCD, dCM])
+                
         return {
             "dJ_df": grad,
             "alpha": self.alpha_batch,
