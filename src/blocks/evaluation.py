@@ -11,10 +11,11 @@ class Evaluation(Block):
         self.config = config
         nfConfig = self.config.neuralFoilSampling
         self.logger = logging
+        self.device = torch.device(config.run.device)
                 
         n_1d = int(sqrt(nfConfig.n_samples))
-        aoa_1d = torch.linspace(nfConfig.AoA_min, nfConfig.AoA_max, n_1d)
-        re_1d  = torch.linspace(nfConfig.Re_min, nfConfig.Re_max, n_1d)
+        aoa_1d = torch.linspace(nfConfig.AoA_min+1, nfConfig.AoA_max-1, n_1d, device=self.device)
+        re_1d  = torch.linspace(nfConfig.Re_min+100, nfConfig.Re_max-100, n_1d, device=self.device)
         aoa, re = torch.meshgrid(aoa_1d, re_1d, indexing="ij")
         self.alpha_batch = aoa.reshape(-1)
         self.Re_batch = re.reshape(-1)
@@ -22,14 +23,9 @@ class Evaluation(Block):
         
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        #fn = downstream_info["reduced_dynamic_fn"]
+        fn = downstream_info["reduced_dynamic_fn"]
 
-        #pred = fn(self.alpha_batch, self.Re_batch)
-
-        pred = downstream_info
-        
-        pred["CL"] = pred["CL"].unsqueeze(-1)
-        pred["CD"] = pred["CD"].unsqueeze(-1)
+        pred = fn(self.alpha_batch, self.Re_batch)
 
         self.last_CL = pred["CL"][:,0].unsqueeze(0)  
         self.last_CD = pred["CD"][:,0].unsqueeze(0)

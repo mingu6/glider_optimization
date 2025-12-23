@@ -59,7 +59,6 @@ class ReducedModel(Block):
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        return downstream_info
         alpha = downstream_info["alpha"].reshape(-1)
         Re = downstream_info["Re"].reshape(-1)
 
@@ -155,9 +154,7 @@ class ReducedModel(Block):
     @override
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
         """Compute gradient and Hessian using precomputed derivatives"""       
-        
-        return {"dJ_dy": upstream_grads["dJ_df"]}
-         
+                 
         alpha_stream = upstream_grads["alpha"]
         Re_stream = upstream_grads["Re"]
         
@@ -166,8 +163,6 @@ class ReducedModel(Block):
         
         X_cheb_stream = self._chebyshev_basis(alpha_scaled, Re_scaled)
                 
-        df_dphi = torch.block_diag(X_cheb_stream, X_cheb_stream, X_cheb_stream)
-        dphi_dy = torch.block_diag(self._normal_lhs, self._normal_lhs, self._normal_lhs)
         df_dphi = X_cheb_stream
         dphi_dy = self._normal_lhs
         
@@ -188,9 +183,3 @@ class ReducedModel(Block):
             
         return {"dJ_dy": dJ_dy}
 
-        # H = torch.zeros(B, 2, 2, device=self._T_alpha.device)
-        # H[:,0,0] = V_factor**2 * (self._d2T_Re.unsqueeze(-1) * self._T_alpha.unsqueeze(-2) * coeffs).sum(dim=(1,2))
-        # H[:,1,1] = AoA_factor**2 * (self._d2T_alpha.unsqueeze(-1) * self._T_Re.unsqueeze(-2) * coeffs).sum(dim=(1,2))
-        # H[:,0,1] = H[:,1,0] = V_factor*AoA_factor * (self._d2T_alphaRe * coeffs).sum(dim=(1,2))
-
-        
