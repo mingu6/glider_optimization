@@ -20,8 +20,9 @@ class NeuralFoilSampling(Block):
             return 0.5*(a+b) + 0.5*(b-a)*np.cos((2*k+1)/(2*n)*np.pi)
 
         n_1d = int(sqrt(nfConfig.n_samples))
-        aoa_1d = torch.linspace(nfConfig.AoA_min, nfConfig.AoA_max, n_1d, device=self.device)
-        re_1d  = torch.linspace(nfConfig.Re_min, nfConfig.Re_max, n_1d, device=self.device)
+        aoa_1d = torch.tensor(chebyshev_nodes(nfConfig.AoA_min, nfConfig.AoA_max, n_1d), device=self.device)
+        re_1d  = torch.tensor(chebyshev_nodes(nfConfig.Re_min, nfConfig.Re_max, n_1d), device=self.device)
+        
         aoa, re = torch.meshgrid(aoa_1d, re_1d, indexing="ij")
         self.alpha_batch = aoa.reshape(-1)
         self.Re_batch = re.reshape(-1)
