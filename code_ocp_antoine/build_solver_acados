@@ -9,13 +9,20 @@ from ocp_perching import build_ocp_l2, build_ocp_l1
 #  Helper to load IPOPT warm-start trajectories
 # ------------------------------------------------------------
 
-def load_ipopt_warm_start(X_ipopt, U_ipopt):
+def load_ipopt_warm_start(X_ipopt, U_ipopt, dt_init=0.02):
     """
     Given IPOPT-optimal sequences:
         X_ipopt : (N+1, nx)
         U_ipopt : (N, nu)
     returns a dict used to warm-start acados OCP.
     """
+    X_ipopt = np.array(X_ipopt).copy()
+    U_ipopt = np.array(U_ipopt).copy()
+
+    # ADD dt column as last state
+    dt_col = dt_init * np.ones((X_ipopt.shape[0], 1))
+    X_ipopt = np.hstack([X_ipopt, dt_col])
+
     warm = {}
     warm["X"] = np.array(X_ipopt).copy()
     warm["U"] = np.array(U_ipopt).copy()
@@ -144,6 +151,7 @@ def run_closed_loop(model,
     """
 
     nx = model.x.size()[0]
+    nx_phys = nx - 1         # exclude dt_var
     nu = model.u.size()[0]
 
     if x_target is None:
@@ -163,16 +171,15 @@ def run_closed_loop(model,
 
         # Update initial condition constraint to current measured state
         x_curr = X_cl[-1]
+        x_curr_phys = x_curr[:nx_phys]
         solver.set(0, "x", x_curr)
-        solver.set(0, "lbx", x_curr)
-        solver.set(0, "ubx", x_curr)
+        solver.set(0, "lbx", x_curr_phys)
+        solver.set(0, "ubx", x_curr_phys)
 
         # Solve OCP
         status = solver.solve()
-        if status != 0:
-            solver.store_iterate(f"iterate_step_{step}.json")
-            print(f"Dumped iterate at step {step}")
-        print(solver.get_stats("residuals"))
+        x0_opt = solver.get(0, "x")
+        dt_opt = float(x0_opt[nx-1])
 
 
         iter_log.append(solver.get_stats("sqp_iter"))
@@ -182,7 +189,7 @@ def run_closed_loop(model,
         if status != 0:
             print(f"⚠️ ACADOS failed at step {step}: status={status}")
 
-        if step%1 == 0:   # or remove condition to log every step
+        if step%10 == 0:   # or remove the bloc to not log
             X_pred = []
             U_pred = []
 
@@ -212,28 +219,32 @@ def run_closed_loop(model,
         U_cl.append(u0)
 
         # Forward simulate real system using sim solver
-        sim.set("x", X_cl[-1])
+        x_sim = X_cl[-1].copy()     
+        x_sim[nx-1] = dt_opt
+
+        sim.set("x", x_sim)
         sim.set("u", u0)
         sim.solve()
         x_next = sim.get("x")
         print(x_next)
 
         X_cl.append(x_next)
-        t += dt
+        t += dt_opt
 
         # Terminal region check
-        e = x_next - x_target
+        x_phys = x_next[:nx_phys]
+        e = x_phys - x_target[:nx_phys]
         value = e.T @ Q_N @ e
         print(f"[step {step}]  terminal metric = {float(value):.3e}")
         xl = np.array([-0.05, 0.0, np.pi/8, -np.pi/3, 0.0, -2.0, -np.inf])
         xu = np.array([ 0.05, 0.05, np.pi/2,  np.pi/8, 2.0,  0.0,  np.inf])
 
-        # If cost is low enough but constraints not satisfied → print which ones
-        if value < 8.0:
+        # If cost is low enough but constraints not satisfied : print which ones to test
+        if value < 10.0:
             violations = []
             labels = ["x", "z", "theta", "phi", "xdot", "zdot", "thetadot"]
 
-            for i in range(len(x_next)):
+            for i in range(nx_phys):
                 if x_next[i] < xl[i]:
                     violations.append(f"{labels[i]} TOO LOW: {x_next[i]:.3f} < {xl[i]:.3f}")
                 elif x_next[i] > xu[i]:
@@ -244,7 +255,7 @@ def run_closed_loop(model,
                 for v in violations:
                     print("   -", v)
 
-        if np.all(x_next >= xl) and np.all(x_next <= xu):
+        if np.all(x_phys >= xl) and np.all(x_phys <= xu):
             print(f"Perching box reached at step {step}. Stopping.")
             break
 
