@@ -72,10 +72,11 @@ def build_perching_model(params):
     xdot   = cs.SX.sym("xdot")
     zdot   = cs.SX.sym("zdot")
     thetadot = cs.SX.sym("thetadot")
+    dt_var = cs.SX.sym("dt")          #decision variable (as state)
 
     phidot = cs.SX.sym("phidot")   # control
 
-    states   = cs.vertcat(x, z, theta, phi, xdot, zdot, thetadot)
+    states   = cs.vertcat(x, z, theta, phi, xdot, zdot, thetadot, dt_var)
     controls = cs.vertcat(phidot)
 
     # -------------------------------------------------------------------------
@@ -146,7 +147,8 @@ def build_perching_model(params):
     xddot = (F_w[0] + F_e[0]) / m
     zddot = (F_w[1] + F_e[1]) / m - g
 
-    xdot_expr = cs.vertcat(
+    #we have to scale the dynamics because of the time scaling
+    xdot_phys = cs.vertcat(
         xdot,
         zdot,
         thetadot,
@@ -156,6 +158,8 @@ def build_perching_model(params):
         thetaddot
     )
 
+    xdot_expr = cs.vertcat(dt_var * xdot_phys, 0.0)  # dt is constant in time
+
     # -------------------------------------------------------------------------
     # Wrap into Acados model
     # -------------------------------------------------------------------------
@@ -163,9 +167,6 @@ def build_perching_model(params):
     model.name = "perching_model"
     model.x = states
     model.u = controls
-
-    # continuous dynamics function (CasADi)
-    #f_expl_fun = cs.Function("f_expl_fun", [states, controls], [xdot_expr])
 
     # continuous-time dynamics for ACADOS (ERK integrator will use this)
     model.f_expl_expr = xdot_expr
