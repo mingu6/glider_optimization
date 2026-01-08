@@ -1,13 +1,20 @@
-from casadi import sin, cos, SX, vcat, vertcat, atan2, sqrt, diag, gradient, Function
+from casadi import (
+    SX, Function,
+    sin, cos, tanh, atan2, sqrt,
+    dot, gradient,
+    vertcat, vcat, diag,
+    pi,
+)
 import numpy as np
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.collections import LineCollection
-
+from ..config import Config
 class GliderPerching :
-    def __init__(self, project_name='glider-perching'):
+    def __init__(self, config: Config, project_name='glider-perching'):
         self.project_name = project_name
+        self.config = config
 
     def C_L(self, alpha):
         return 2 * sin(alpha) * cos(alpha)
@@ -20,6 +27,28 @@ class GliderPerching :
 
     def mc_to_wcom(self, l_w):
         return l_w+0.003
+    
+    def scale(self, x, min, max):
+        return 2*(x - min)/(max - min) - 1
+    
+    def cheb_basis_2d(self, alpha_s, Re_s, deg):
+        T_a = [1, alpha_s]
+        T_r = [1, Re_s]
+
+        for k in range(2, deg+1):
+            T_a.append(2*alpha_s*T_a[k-1] - T_a[k-2])
+            T_r.append(2*Re_s*T_r[k-1] - T_r[k-2])
+
+        B = []
+        for i in range(deg+1):
+            for j in range(deg+1):
+                B.append(T_a[i]*T_r[j])
+
+        return vertcat(*B)
+
+    # Smooth, differentiable gate that is ~1 for xmin < x < xmax and ~0 outside, with transition sharpness controlled by k
+    def smooth_gate(self, x, xmin, xmax, k):
+        return 0.5*(tanh(k*(x - xmin)) - tanh(k*(x - xmax)))
 
     def initDyn(self):
         # set the global parameters
@@ -32,18 +61,24 @@ class GliderPerching :
         m_f = 0.4 * m                                   # mass of fuselage
         l_w = 0.5*(l_w_i+l_w_f)
         g = 9.81
+        S_w = 0.158
+        S_e = 0.017
+        mu_air = 1.81e-5
+        
+        chebyshev_deg = self.config.reducedModel.chebyshev_degree
 
-        # declare system parameters
-        self.S_w = SX.sym('S_w')
-        self.S_e = SX.sym('S_e')
+        phi_CL = SX.sym("phi_CL", (chebyshev_deg+1)**2, 1)
+        phi_CD = SX.sym("phi_CD", (chebyshev_deg+1)**2, 1)
+        phi_CM = SX.sym("phi_CM", (chebyshev_deg+1)**2, 1)
                 
-        parameter = [self.S_w, self.S_e]
+        parameter = [phi_CL, phi_CD, phi_CM]
         self.dyn_auxvar = vcat(parameter)
 
-        m_w = 0.6 * m * self.S_w / (self.S_w + self.S_e)
-        m_e = 0.6 * m * self.S_e / (self.S_w + self.S_e)
+        m_w = 0.6 * m * S_w / (S_w + S_e)
+        m_e = 0.6 * m * S_e / (S_w + S_e)
         l_f = -(l_w * m_w + (l - l_e) * m_e) / m_f      # vector to fuselage CoM
         I = m_w * l_w ** 2 + m_e * (l + l_e) ** 2 + m_f * l_f ** 2
+        chord = np.abs(l_w_f - l_w_i)
         
         # Declare system variables
         x = SX.sym("x")
@@ -74,22 +109,38 @@ class GliderPerching :
         x_edot = xdot + l * thetadot * sin(theta) + l_e * (thetadot + phidot) * sin(theta + phi)
         z_edot = zdot - l * thetadot * cos(theta) - l_e * (thetadot + phidot) * cos(theta + phi)
         
-        # force vectors for aerodynamic surfaces (lift, drag, gravity)
-
-        c = np.abs(l_w_f - l_w_i)
-        alpha_w = theta - atan2(z_wdot, x_wdot)
         v_w = sqrt(x_wdot * x_wdot + z_wdot * z_wdot + 1e-8) # flow/air speed
-        F_Lw = self.C_L(alpha_w) * vertcat(-z_wdot, x_wdot)  # lift force vector (proportional to)
-        F_Dw = self.C_D(alpha_w) * vertcat(-x_wdot, -z_wdot) # drag force vector (proportional to)
-        F_w = 0.5 * rho * v_w * self.S_w * (F_Lw + F_Dw)
-        M_w = 0.5 * rho * v_w**2 * self.S_w * c * self.C_M(alpha_w)
+        
+        alpha_w = theta - atan2(z_wdot, x_wdot)
+        Re = rho * v_w * chord / mu_air
+        
+        nfConfig = self.config.neuralFoilSampling
+        
+        a0_min = nfConfig.AoA_min*pi/180
+        a0_max = nfConfig.AoA_max*pi/180
+        sharpness = 20
+        w = self.smooth_gate(alpha_w, a0_min, a0_max, sharpness)
+        alpha_scaled = self.scale(alpha_w, a0_min, a0_max)
+        Re_scaled = self.scale(Re, nfConfig.Re_min, nfConfig.Re_max)
+        
+        X = self.cheb_basis_2d(alpha_scaled, Re_scaled, chebyshev_deg)
+
+        CL_w = w*dot(X, phi_CL) + (1-w)*self.C_L(alpha_w)
+        CD_w = w*dot(X, phi_CD) + (1-w)*self.C_D(alpha_w)
+        CM_w = w*dot(X, phi_CM) + (1-w)*self.C_M(alpha_w)
+        
+        # force vectors for aerodynamic surfaces (lift, drag, gravity)
+        F_Lw = CL_w * vertcat(-z_wdot, x_wdot)  # lift force vector (proportional to)
+        F_Dw = CD_w * vertcat(-x_wdot, -z_wdot) # drag force vector (proportional to)
+        F_w = 0.5 * rho * v_w * S_w * (F_Lw + F_Dw)
+        M_w = 0.5 * rho * v_w**2 * S_w * chord * CM_w
 
         alpha_e = theta + phi - atan2(z_edot, x_edot)
         v_e = sqrt(x_edot * x_edot + z_edot * z_edot + 1e-8)    # flow/air speed
         F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)          # lift force vector (proportional to)
         F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)         # drag force vector (proportional to)
-        F_e = 0.5 * rho * v_e * self.S_e * (F_Le + F_De)
-        M_e = 0.5 * rho * v_e**2 * self.S_e * c * self.C_M(alpha_e)
+        F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
+        M_e = 0.5 * rho * v_e**2 * S_e * chord * self.C_M(alpha_e)
 
         # compute torques with respect to fixed reference point induced by forces
 

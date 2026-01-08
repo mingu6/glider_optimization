@@ -11,13 +11,10 @@ class ReducedModel(Block):
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging
-        self.objective = {}
 
         self._precomputed = False
         self._deg = self.config.reducedModel.chebyshev_degree
         self._l2_reg = self.config.reducedModel.l2_reg
-        
-        self._coeffs = {}
 
     def _scale(self, x, min_val, max_val):
         mask = ~((x <= max_val) & (x >= min_val))
@@ -65,8 +62,9 @@ class ReducedModel(Block):
         self.alpha_min, self.alpha_max = alpha.min(), alpha.max()
         self.Re_min, self.Re_max = Re.min(), Re.max()
 
-        alpha_scaled = self._scale(alpha, self.alpha_min, self.alpha_max)
-        Re_scaled = self._scale(Re, self.Re_min, self.Re_max)
+        nfConfig = self.config.neuralFoilSampling
+        alpha_scaled = self._scale(alpha, nfConfig.AoA_min, nfConfig.AoA_max)
+        Re_scaled = self._scale(Re, nfConfig.Re_min, nfConfig.Re_max)
 
         if not self._precomputed:
             self._precompute_chebyshev(alpha_scaled, Re_scaled) # The alpha, Re grid is actually constant (in neuralFoilSampling), so we can precompute the Chebyshev basis
@@ -113,73 +111,23 @@ class ReducedModel(Block):
         else:
             coeffs_CL = self._ridge_solve(CL)
             coeffs_CD = self._ridge_solve(CD)
-            coeffs_CM = self._ridge_solve(CM)
-
-        self._coeffs = {"CL": coeffs_CL, "CD": coeffs_CD, "CM": coeffs_CM}
-
-        self.objective = {
-            "CL": torch.mean((X_cheb @ coeffs_CL - CL)**2),
-            "CD": torch.mean((X_cheb @ coeffs_CD - CD)**2),
-            "CM": torch.mean((X_cheb @ coeffs_CM - CM)**2)
+            coeffs_CM = self._ridge_solve(CM)      
+            
+        return {
+            "phi_CL": coeffs_CL, 
+            "phi_CD": coeffs_CD, 
+            "phi_CM": coeffs_CM
         }
-        
-        def predict_fn(alpha_new, Re_new):
-            alpha_new = alpha_new.reshape(-1)
-            Re_new = Re_new.reshape(-1)
-            alpha_s = self._scale(alpha_new, self.alpha_min, self.alpha_max)
-            Re_s = self._scale(Re_new, self.Re_min, self.Re_max)
-
-            B = alpha_s.shape[0]
-            deg = self._deg
-
-            T_alpha_new = torch.zeros(B, deg+1, device=alpha_s.device)
-            T_Re_new = torch.zeros(B, deg+1, device=Re_s.device)
-
-            T_alpha_new[:,0] = 1
-            T_Re_new[:,0] = 1
-            if deg >= 1:
-                T_alpha_new[:,1] = alpha_s
-                T_Re_new[:,1] = Re_s
-
-            for n in range(2, deg+1):
-                T_alpha_new[:,n] = 2*alpha_s*T_alpha_new[:,n-1] - T_alpha_new[:,n-2]
-                T_Re_new[:,n] = 2*Re_s*T_Re_new[:,n-1] - T_Re_new[:,n-2]
-
-            X_new = (T_alpha_new.unsqueeze(-1) * T_Re_new.unsqueeze(-2)).reshape(B, -1)
-
-            return {k: X_new @ v for k,v in self._coeffs.items()}
-
-        return {"reduced_dynamic_fn": predict_fn}
 
     @override
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
-        """Compute gradient and Hessian using precomputed derivatives"""       
-                 
-        alpha_stream = upstream_grads["alpha"]
-        Re_stream = upstream_grads["Re"]
-        
-        alpha_scaled = self._scale(alpha_stream, self.alpha_min, self.alpha_max)
-        Re_scaled = self._scale(Re_stream, self.Re_min, self.Re_max)
-        
-        X_cheb_stream = self._chebyshev_basis(alpha_scaled, Re_scaled)
-                
-        df_dphi = X_cheb_stream
         dphi_dy = self._normal_lhs
-        
-        if df_dphi.isnan().any():
-            self.logger.critical(f"⚠️ NaN detected in ReducedModel backward df_dphi")
-        
-        dJ_df = upstream_grads["dJ_df"]
-
-        dJ_dphi = dJ_df @ df_dphi
+        dJ_dphi = upstream_grads["dJ_dphi"]
                 
         if dphi_dy.isnan().any():
             self.logger.critical(f"⚠️ NaN detected in ReducedModel backward dphi_dy")
             
         dJ_dy = dJ_dphi @ dphi_dy
-        
-        if df_dphi.isnan().any():
-            self.logger.critical(f"⚠️ NaN detected in ReducedModel backward dJ_dy")
-            
+                            
         return {"dJ_dy": dJ_dy}
 

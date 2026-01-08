@@ -1,7 +1,7 @@
 from typing import Any, Dict
 from .config import Config
 from .blockBase import Block
-from .blocks import Airfoil, NeuralFoilSampling, ReducedModel, Evaluation
+from .blocks import Airfoil, NeuralFoilSampling, ReducedModel, Evaluation, OCP
 import logging
 import matplotlib
 import matplotlib.pyplot as plt
@@ -17,7 +17,7 @@ class Runner:
             "Airfoil": Airfoil(config),
             "NeuralFoilSampling": NeuralFoilSampling(config),
             "ReducedModel": ReducedModel(config),
-            "Evaluation": Evaluation(config)
+            "OCP": OCP(config)
         }
         self.objective_evolution = []
         self.setup_environment()
