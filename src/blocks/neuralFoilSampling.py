@@ -53,13 +53,23 @@ class NeuralFoilSampling(Block):
             device=self.device,
             model_size=self.config.neuralFoilSampling.neuralFoil_size,
         )
-    
+        conf = self._last_aero_coeff.get("analysis_confidence")
+        try:
+            conf_mean = float(conf.mean().detach().cpu().item())
+        except Exception:
+            conf_mean = 1.0
+
+        constraint_violation = max(0.0, self.min_confidence - conf_mean)
+        lambda_val = float(self.lambda_conf.detach().cpu().item()) if isinstance(self.lambda_conf, torch.Tensor) else float(self.lambda_conf)
+        aug_lagrangian = lambda_val * constraint_violation + 0.5 * float(self.rho) * (constraint_violation ** 2)
+
         return {
             "alpha": self.alpha_batch,
             "Re": self.Re_batch,
             "CL": self._last_aero_coeff["CL"].detach(),
             "CD": self._last_aero_coeff["CD"].detach(),
             "CM": self._last_aero_coeff["CM"].detach(),
+            "augmented_lagrangian": aug_lagrangian,
         }
 
     @override
@@ -74,7 +84,7 @@ class NeuralFoilSampling(Block):
         constraint_lagrangian = self.lambda_conf * constraint_violation + self.rho/2 * (constraint_violation**2)
 
         if constraint_violation.detach() > 0.1:
-            self.logger.critical("⚠️ Large confidence violation detected. Training may become unstable")
+            self.logger.critical(f"⚠️ Large confidence violation detected. Training may become unstable. Mean Confidence {conf.mean():.3f}. Target {self.min_confidence:.3f}")
         if CL.isnan().any():
             self.logger.critical("⚠️ NaN detected in NeuralFoilSampling feedforward CL")
         if CD.isnan().any():

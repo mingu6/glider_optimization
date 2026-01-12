@@ -7,11 +7,14 @@ from ..config import Config
 from casadi import pi, vertcat
 import numpy as np
 import torch
+import logging
+
 class OCP(Block):
     @override
     def __init__(self, config: Config):
         self.config = config
         self.device = torch.device(config.run.device)
+        self.logger = logging
         
         self.env = GliderPerching(self.config)
         self.coc = COCsys()
@@ -44,11 +47,19 @@ class OCP(Block):
         weights_CM = downstream_info["phi_CM"].view(-1, 1).detach().cpu().numpy()
 
         auxvar_vector = np.vstack([weights_CL, weights_CD, weights_CM])
-        self.last_traj_COC = self.coc.ocSolver(horizon=111, init_state=self.init_state, auxvar_value=auxvar_vector, timeVarying=True)
-        
-        #self.env.play_animation(traj_COC['state_traj_opt'], traj_COC['control_traj_opt'], save_option=True, title="meek")
+        self.last_traj_COC = self.coc.ocSolver(horizon=111, init_state=self.init_state, auxvar_value=auxvar_vector, timeVarying=True, warm_start=True)
+
+        if not self.last_traj_COC["success"]:
+            self.logger.critical(f"⚠️ IPOPT couldn't find a solution")
+
+        cost_val = float(self.last_traj_COC["cost"][0][0])
+        aug = downstream_info.get("augmented_lagrangian", 0.0)
+        total_obj = cost_val + float(aug)
+
         return {
-            "objective": self.last_traj_COC["cost"][0][0]
+            "objective": total_obj,
+            "cost": cost_val,
+            "augmented_lagrangian": float(aug),
         }
     
     @override

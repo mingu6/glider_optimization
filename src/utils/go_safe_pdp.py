@@ -152,7 +152,7 @@ class COCsys:
             self.init_condition_fn = casadi.Function('initial_condition', [self.auxvar], [self.init_condition])
 
     # optimal control solver (using direct methods)
-    def ocSolver(self, horizon, init_state=None, auxvar_value=1, print_level=0, timeVarying=False):
+    def ocSolver(self, horizon, init_state=None, auxvar_value=1, print_level=0, timeVarying=False, warm_start=False):
 
         if not hasattr(self, 'final_equ_cstr'):
             self.setFinalEquCstr()
@@ -250,15 +250,37 @@ class COCsys:
 
         # Create an NLP solver and solve
         opts = {'ipopt.print_level': print_level, 'ipopt.sb': 'yes', 'print_time': print_level}
+        if warm_start and hasattr(self, 'w_opt_prev') and self.w_opt_prev is not None:
+            opts.update({'ipopt.warm_start_init_point': 'yes',
+                         'ipopt.warm_start_bound_push': 1e-6,
+                         'ipopt.warm_start_mult_bound_push': 1e-6})
         prob = {'f': J, 'x': vertcat(*w), 'g': vertcat(*g)}
         solver = nlpsol('solver', 'ipopt', prob, opts)
         # Solve the NLP
         assert len(lbw) == self.n_state * (horizon+1) + self.n_control * (horizon)
         assert len(ubw) == self.n_state * (horizon+1) + self.n_control * (horizon)
                 
-        sol = solver(x0=w0, lbx=lbw, ubx=ubw, lbg=lbg, ubg=ubg)
+        solver_call_kwargs = {'x0': w0, 'lbx': lbw, 'ubx': ubw, 'lbg': lbg, 'ubg': ubg}
+        if warm_start and hasattr(self, 'w_opt_prev') and self.w_opt_prev is not None:
+            solver_call_kwargs['x0'] = self.w_opt_prev
+            if hasattr(self, 'lam_g_prev') and self.lam_g_prev is not None:
+                solver_call_kwargs['lam_g0'] = self.lam_g_prev
+            if hasattr(self, 'lam_x_prev') and self.lam_x_prev is not None:
+                solver_call_kwargs['lam_x0'] = self.lam_x_prev
+
+        sol = solver(**solver_call_kwargs)
+        stats = solver.stats()
+        success = stats['success']
         w_opt = sol['x'].full().flatten()
         lam_g = sol['lam_g'].full().flatten()
+        try:
+            lam_x = sol['lam_x'].full().flatten()
+        except Exception:
+            lam_x = None
+
+        self.w_opt_prev = w_opt.tolist()
+        self.lam_g_prev = lam_g.tolist()
+        self.lam_x_prev = lam_x.tolist() if lam_x is not None else None
         g = sol['g'].full().flatten()
 
         # extract the optimal control and state
@@ -297,7 +319,8 @@ class COCsys:
                    'auxvar_value': auxvar_value,
                    "time": time,
                    "horizon": horizon,
-                   "cost": sol['f'].full()}
+                   "cost": sol['f'].full(),
+                   "success": success}
 
         return opt_sol
 

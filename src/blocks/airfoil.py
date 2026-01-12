@@ -2,6 +2,7 @@ from ..blockBase import Block
 from typing import override
 from ..config import Config
 from ..utils.cu_kulfan_airfoil import cuKulfanAirfoil
+from pathlib import Path
 from typing import Dict, Any
 import aerosandbox as asb
 import matplotlib
@@ -46,11 +47,10 @@ class Airfoil(Block):
         
         self.upper_params.grad = upstream_grads["dupper_params"]
         self.lower_params.grad = upstream_grads["dlower_params"]
-        self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
-        self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]        
+        #self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
+        #self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]        
         
-        self.optimizer.step()
-
+        self.optimizer.step()        
         with torch.no_grad():
             self.TE_thickness_param.clamp_(1e-4, 0.01)
             min_gap = 0.002
@@ -130,4 +130,5 @@ class Airfoil(Block):
 
     def save_gif(self, filename="airfoil_evolution.gif", fps=1):
         if self.frames:
-            imageio.mimsave(filename, self.frames, fps=fps)
+            log_dir = Path(self.config.io.checkpoint_dir)
+            imageio.mimsave(log_dir/filename, self.frames, fps=fps)

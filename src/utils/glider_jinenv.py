@@ -164,7 +164,7 @@ class GliderPerching :
         self.cost_auxvar = vcat([])
 
         err = self.X - self.goal
-        self.path_cost = wu * (self.U * self.U) # + err.T @ diag(state_weights)*stage_scale @ err 
+        self.path_cost = wu * (self.U * self.U) + err.T @ diag(state_weights)*stage_scale @ err 
         self.dpath_cost_dx = gradient(self.path_cost, self.X)
         self.dpath_cost_du = gradient(self.path_cost, self.U)
         
@@ -409,14 +409,17 @@ class GliderPerching :
             interval=1000 / fps, repeat=False
         )
         
-        # Save if requested
         if save_option:
             save_path = f"{title}.gif"
             print(f"Saving animation to {save_path}...")
             ani.save(save_path, writer='pillow', fps=fps, dpi=100)
             print("Animation saved!")
-        
-        fig.canvas.manager.set_window_title("Glider Perching OCP")
+            plt.close(fig)
+            return ani
+
+        try:
+            fig.canvas.manager.set_window_title("Glider Perching OCP")
+        except Exception:
+            pass
         plt.show()
-        
         return ani

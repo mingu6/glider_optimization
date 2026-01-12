@@ -113,10 +113,13 @@ class ReducedModel(Block):
             coeffs_CD = self._ridge_solve(CD)
             coeffs_CM = self._ridge_solve(CM)      
             
+        # propagate augmented lagrangian if present so downstream blocks can access it
+        aug = downstream_info.get("augmented_lagrangian", 0.0)
         return {
             "phi_CL": coeffs_CL, 
             "phi_CD": coeffs_CD, 
-            "phi_CM": coeffs_CM
+            "phi_CM": coeffs_CM,
+            "augmented_lagrangian": aug,
         }
 
     @override
