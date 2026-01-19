@@ -4,3 +4,4 @@ runs/*
 *.pyc
 *.log
 *.yaml
+*.egg-info

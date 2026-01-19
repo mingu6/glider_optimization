@@ -13,6 +13,7 @@ import imageio.v2 as imageio
 import warnings
 import torch.nn as nn
 import torch
+import torch.optim.lr_scheduler as lr_scheduler
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -29,11 +30,45 @@ class Airfoil(Block):
 
         self.optimizer = torch.optim.Adam([self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param], lr=af_conf.lr)
 
+        # iteration counter (updated in forward)
+        self._iter = 0
+
+        # optional LR scheduler (configured via `config.airfoil.lr_schedule`)
+        self.scheduler = None
+        sched_conf = getattr(af_conf, "lr_schedule", None)
+        def _get(c, k, default):
+            if c is None:
+                return default
+            if isinstance(c, dict):
+                return c.get(k, default)
+            return getattr(c, k, default)
+
+        if sched_conf is not None:
+            typ = _get(sched_conf, "type", "exponential")
+            if typ == "exponential":
+                gamma = _get(sched_conf, "gamma", 0.99)
+                self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
+            elif typ == "step":
+                step_size = _get(sched_conf, "step_size", 100)
+                gamma = _get(sched_conf, "gamma", 0.1)
+                self.scheduler = lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
+            elif typ == "cosine":
+                T_max = _get(sched_conf, "T_max", 100)
+                self.scheduler = lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=T_max)
+            elif typ == "reduce_on_plateau":
+                mode = _get(sched_conf, "mode", "min")
+                factor = _get(sched_conf, "factor", 0.1)
+                patience = _get(sched_conf, "patience", 10)
+                self.scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode=mode, factor=factor, patience=patience, verbose=True)
+
         self.frames = []
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        if downstream_info.get("iteration", 0) % self.config.io.log_every == 0:
+        # keep track of the current iteration (used for scheduling/logging)
+        self._iter = downstream_info.get("iteration", self._iter)
+
+        if self._iter % self.config.io.log_every == 0:
             self.plot()
         return {
             "upper_weights": self.upper_params, 
@@ -51,6 +86,24 @@ class Airfoil(Block):
         #self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]        
         
         self.optimizer.step()        
+        # step the LR scheduler if present
+        if self.scheduler is not None:
+            try:
+                # ReduceLROnPlateau requires a metric
+                if isinstance(self.scheduler, lr_scheduler.ReduceLROnPlateau):
+                    metric = None
+                    if isinstance(upstream_grads, dict):
+                        metric = upstream_grads.get("outer_loss", upstream_grads.get("loss", None))
+                    if metric is not None:
+                        self.scheduler.step(metric)
+                    else:
+                        warnings.warn("ReduceLROnPlateau scheduler configured but no metric found in upstream_grads; skipping step.")
+                else:
+                    # step by iteration
+                    self.scheduler.step()
+            except Exception:
+                warnings.warn("LR scheduler step failed; continuing without scheduling.")
+
         with torch.no_grad():
             self.TE_thickness_param.clamp_(1e-4, 0.01)
             min_gap = 0.002
@@ -86,6 +139,13 @@ class Airfoil(Block):
         '''
             
         return {}
+
+    def get_lr(self) -> float:
+        """Return current learning rate for the optimizer (first param group)."""
+        try:
+            return float(self.optimizer.param_groups[0]["lr"])
+        except Exception:
+            return float(getattr(self.config.airfoil, "lr", 0.0))
 
     def plot(self):
         airfoilConfig = self.config.airfoil

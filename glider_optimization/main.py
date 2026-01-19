@@ -2,9 +2,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .config import load_config
-from .runner import Runner
-from .logger import setup_logging
+from glider_optimization.config import load_config
+from glider_optimization.runner import Runner
+from glider_optimization.logger import setup_logging
 
 from argparse import ArgumentParser
 from pathlib import Path

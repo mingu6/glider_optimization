@@ -1,6 +1,6 @@
 from abc import ABC
 from typing import Dict, Any
-from .config import Config
+from glider_optimization.config import Config
 
 class Block(ABC):
     def __init__(self, config: Config): ...

@@ -1,10 +1,9 @@
 from typing import Any, Dict
 from pathlib import Path
-from .config import Config
-from .blockBase import Block
-from .blocks import Airfoil, NeuralFoilSampling, ReducedModel, Evaluation, OCP
+from glider_optimization.config import Config
+from glider_optimization.blockBase import Block
+from glider_optimization.blocks import Airfoil, NeuralFoilSampling, ReducedModel, OCP
 import logging
-import matplotlib
 import matplotlib.pyplot as plt
 
 class Runner:
