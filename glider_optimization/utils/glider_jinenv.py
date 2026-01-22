@@ -3,7 +3,7 @@ from casadi import (
     sin, cos, tanh, atan2, sqrt,
     dot, gradient,
     vertcat, vcat, diag,
-    pi,
+    pi, fmax, fmin
 )
 import numpy as np
 import matplotlib.animation as animation
@@ -123,7 +123,11 @@ class GliderPerching :
         alpha_scaled = self.scale(alpha_w, a0_min, a0_max)
         Re_scaled = self.scale(Re, nfConfig.Re_min, nfConfig.Re_max)
         
-        X = self.cheb_basis_2d(alpha_scaled, Re_scaled, chebyshev_deg)
+        # Clamp scaled inputs to [-1, 1] to prevent Chebyshev basis explosion outside the envelope
+        alpha_scaled_clamped = fmax(-1.0, fmin(1.0, alpha_scaled))
+        Re_scaled_clamped = fmax(-1.0, fmin(1.0, Re_scaled))
+        
+        X = self.cheb_basis_2d(alpha_scaled_clamped, Re_scaled_clamped, chebyshev_deg)
 
         CL_w = w*dot(X, phi_CL) + (1-w)*self.C_L(alpha_w)
         CD_w = w*dot(X, phi_CD) + (1-w)*self.C_D(alpha_w)
@@ -245,19 +249,33 @@ class GliderPerching :
         
         # ==================== SIMULATION PANEL (Main) ====================
         ax_sim = fig.add_subplot(gs[0:2, 0])
-        ax_sim.set_xlim(-3.5, 2)
-        ax_sim.set_ylim(-3, 2.5)
+        
+        # Dynamic limits based on trajectory
+        x_all = np.concatenate([state_traj[:, 0], [x_target]])
+        z_all = np.concatenate([state_traj[:, 1], [z_target]])
+        
+        x_min, x_max = x_all.min(), x_all.max()
+        z_min, z_max = z_all.min(), z_all.max()
+        
+        # Add padding (at least 1m or 10% of range)
+        pad_x = max(1.0, (x_max - x_min) * 0.1)
+        pad_z = max(1.0, (z_max - z_min) * 0.1)
+        
+        ax_sim.set_xlim(x_min - pad_x, x_max + pad_x)
+        ax_sim.set_ylim(z_min - pad_z, z_max + pad_z)
+        
         ax_sim.set_aspect('equal', adjustable='box')
         ax_sim.set_title("Glider Perching Simulation", fontsize=12, fontweight='bold', pad=10)
         ax_sim.set_xlabel("X Position (m)", fontsize=10)
         ax_sim.set_ylabel("Z Position (m)", fontsize=10)
         ax_sim.grid(True, alpha=0.2, linestyle=':')
-        ax_sim.axhline(0, color='brown', linestyle='--', alpha=0.3, linewidth=2)
         
-        # Target visualization with glow
+        # Start position marker
+        ax_sim.plot(state_traj[0, 0], state_traj[0, 1], 'x', color='black', markersize=8, markeredgewidth=2, label='Start', zorder=4)
 
+        # Target visualization with glow
         target_circle = Circle((x_target, z_target), 0.1, fill=False, 
-                            edgecolor='red', linestyle='-', linewidth=4)
+                            edgecolor='#FF5252', linestyle='-', linewidth=3, zorder=4, label='Target')
         ax_sim.add_patch(target_circle)
         
         # Glider artists

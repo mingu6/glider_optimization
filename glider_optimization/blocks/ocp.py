@@ -22,7 +22,7 @@ class OCP(Block):
         self.env.initDyn()
         env_dyn = self.env.X + self.env.X[-1] * self.env.f
         
-        self.env.initCost(state_weights=[10., 10., 3., 0.1, 2., 1., 1., 0.1], wu=0.1)
+        self.env.initCost(state_weights=[10., 10., 5., 0.01, 5., 5., 2., 0.01], wu=0.1)
         self.env.initConstraints(-pi/3, pi/8, 13)
         
         self.coc.setAuxvarVariable(vertcat(self.env.dyn_auxvar))
@@ -36,7 +36,7 @@ class OCP(Block):
         self.coc.setPathInequCstr(self.env.path_inequ)
         self.coc.diffCPMP()
         
-        self.init_state = [-3.5, 0.1 , 0. , 0., 7., 0. , 0., 0.01]
+        self.init_state = [-6.5, 0 , 0. , 0., 7., 0. , 0., 0.01]
         
         
     @override

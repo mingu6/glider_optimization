@@ -82,8 +82,8 @@ class Airfoil(Block):
         
         self.upper_params.grad = upstream_grads["dupper_params"]
         self.lower_params.grad = upstream_grads["dlower_params"]
-        #self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
-        #self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]        
+        self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
+        self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]        
         
         self.optimizer.step()        
         # step the LR scheduler if present
@@ -106,7 +106,7 @@ class Airfoil(Block):
 
         with torch.no_grad():
             self.TE_thickness_param.clamp_(1e-4, 0.01)
-            min_gap = 0.002
+            min_gap = 0.01
             
             self.upper_params.data = torch.maximum(
                 self.upper_params.data,

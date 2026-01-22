@@ -23,12 +23,12 @@ class Evaluation(Block):
         
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        fn = downstream_info["reduced_dynamic_fn"]
+        #fn = downstream_info["reduced_dynamic_fn"]
 
-        pred = fn(self.alpha_batch, self.Re_batch)
+        #pred = fn(self.alpha_batch, self.Re_batch)
 
-        self.last_CL = pred["CL"][:,0].unsqueeze(0)  
-        self.last_CD = pred["CD"][:,0].unsqueeze(0)
+        self.last_CL = downstream_info["CL"].unsqueeze(0)  
+        self.last_CD = downstream_info["CD"].unsqueeze(0)
 
         obj = -self.last_CL/self.last_CD
         
@@ -46,7 +46,7 @@ class Evaluation(Block):
         grad = torch.cat([dCL, dCD, dCM])
                 
         return {
-            "dJ_df": grad,
+            "dJ_dy": grad,
             "alpha": self.alpha_batch,
             "Re": self.Re_batch
         }

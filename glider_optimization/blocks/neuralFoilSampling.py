@@ -27,11 +27,19 @@ class NeuralFoilSampling(Block):
         self.alpha_batch = aoa.reshape(-1)
         self.Re_batch = re.reshape(-1)
         
+        # Validation set (random uniform)
+        n_val = int(nfConfig.n_samples * 0.2) # 20% validation size
+        self.alpha_val = (torch.rand(n_val, device=self.device) * (nfConfig.AoA_max - nfConfig.AoA_min)) + nfConfig.AoA_min
+        self.Re_val = (torch.rand(n_val, device=self.device) * (nfConfig.Re_max - nfConfig.Re_min)) + nfConfig.Re_min
+        
         self.last_airfoil = None
         
         self.lambda_conf = torch.tensor(0., device=self.device, requires_grad=False)
         self.rho = nfConfig.rho
         self.min_confidence = nfConfig.min_confidence
+        
+        self.min_avg_Cl_Cd = nfConfig.min_avg_Cl_Cd
+        self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -63,6 +71,32 @@ class NeuralFoilSampling(Block):
         lambda_val = float(self.lambda_conf.detach().cpu().item()) if isinstance(self.lambda_conf, torch.Tensor) else float(self.lambda_conf)
         aug_lagrangian = lambda_val * constraint_violation + 0.5 * float(self.rho) * (constraint_violation ** 2)
 
+        # Cl/Cd constraint
+        CL_fwd = self._last_aero_coeff["CL"].detach()
+        CD_fwd = self._last_aero_coeff["CD"].detach()
+        CD_safe_fwd = torch.clamp(CD_fwd, min=1e-5)
+        cl_cd_mean = float((CL_fwd / CD_safe_fwd).mean().cpu().item())
+        
+        violation_clcd = max(0.0, self.min_avg_Cl_Cd - cl_cd_mean)
+        lambda_clcd_val = float(self.lambda_clcd.detach().cpu().item()) if isinstance(self.lambda_clcd, torch.Tensor) else float(self.lambda_clcd)
+        aug_lagrangian += lambda_clcd_val * violation_clcd + 0.5 * float(self.rho) * (violation_clcd ** 2)
+
+        # Validation forward pass
+        B_val = self.alpha_val.shape[0]
+        kulfan_batch_val = {
+            "upper_weights_cuda": downstream_info["upper_weights"].repeat(B_val, 1),
+            "lower_weights_cuda": downstream_info["lower_weights"].repeat(B_val, 1),
+            "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B_val),
+            "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B_val),
+        }
+        val_aero = get_aero_from_kulfan_parameters_cuda(
+            kulfan_batch_val,
+            self.alpha_val,
+            self.Re_val,
+            device=self.device,
+            model_size=self.config.neuralFoilSampling.neuralFoil_size,
+        )
+
         return {
             "alpha": self.alpha_batch,
             "Re": self.Re_batch,
@@ -70,6 +104,12 @@ class NeuralFoilSampling(Block):
             "CD": self._last_aero_coeff["CD"].detach(),
             "CM": self._last_aero_coeff["CM"].detach(),
             "augmented_lagrangian": aug_lagrangian,
+            # Validation data
+            "val_alpha": self.alpha_val,
+            "val_Re": self.Re_val,
+            "val_CL": val_aero["CL"].detach(),
+            "val_CD": val_aero["CD"].detach(),
+            "val_CM": val_aero["CM"].detach(),
         }
 
     @override
@@ -82,6 +122,18 @@ class NeuralFoilSampling(Block):
         constraint = self.min_confidence - conf.mean() 
         constraint_violation = torch.relu(constraint)
         constraint_lagrangian = self.lambda_conf * constraint_violation + self.rho/2 * (constraint_violation**2)
+
+        # Cl/Cd constraint backward
+        CD_safe = torch.clamp(CD, min=1e-5)
+        cl_cd_ratio = CL / CD_safe
+        constraint_clcd = self.min_avg_Cl_Cd - cl_cd_ratio.mean()
+        violation_clcd = torch.relu(constraint_clcd)
+        constraint_lagrangian_clcd = self.lambda_clcd * violation_clcd + self.rho/2 * (violation_clcd**2)
+        
+        constraint_lagrangian = constraint_lagrangian + constraint_lagrangian_clcd
+        
+        if violation_clcd.detach() > 1.0:
+             self.logger.warning(f"⚠️ Large Cl/Cd violation. Mean: {cl_cd_ratio.mean().detach():.3f}. Target: {self.min_avg_Cl_Cd:.3f}")
 
         if constraint_violation.detach() > 0.1:
             self.logger.critical(f"⚠️ Large confidence violation detected. Training may become unstable. Mean Confidence {conf.mean():.3f}. Target {self.min_confidence:.3f}")
@@ -115,6 +167,7 @@ class NeuralFoilSampling(Block):
             
         with torch.no_grad():
             self.lambda_conf += self.rho * constraint_violation.mean().detach()
+            self.lambda_clcd += self.rho * violation_clcd.mean().detach()
             
         return {
             "dupper_params": grad[0] + grad_lagrangian[0],

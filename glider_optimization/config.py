@@ -40,6 +40,7 @@ class NeuralFoilSamplingConfig(BaseModel):
     Re_max: float = 6e5
     n_samples: int = 100
     min_confidence: float = 0.7
+    min_avg_Cl_Cd: float = 2.0
     rho: float = 10.0
 
     @field_validator("neuralFoil_size")

@@ -75,43 +75,38 @@ class ReducedModel(Block):
         CD = downstream_info["CD"].reshape(-1,1)
         CM = downstream_info["CM"].reshape(-1,1)
 
-        if self.config.io.debug and False:
-            B = X_cheb.shape[0]
-            val_idx = torch.randperm(B)[:int(0.1 * B)]
-            train_idx = torch.tensor([i for i in range(B) if i not in val_idx], device=X_cheb.device)
+        coeffs_CL = self._ridge_solve(CL)
+        coeffs_CD = self._ridge_solve(CD)
+        coeffs_CM = self._ridge_solve(CM)
 
-            X_train, X_val = X_cheb[train_idx], X_cheb[val_idx]
-            CL_train, CL_val = CL[train_idx], CL[val_idx]
-            CD_train, CD_val = CD[train_idx], CD[val_idx]
-            CM_train, CM_val = CM[train_idx], CM[val_idx]
+        if "val_alpha" in downstream_info:
+            val_alpha = downstream_info["val_alpha"]
+            val_Re = downstream_info["val_Re"]
+            val_CL = downstream_info["val_CL"].reshape(-1, 1)
+            val_CD = downstream_info["val_CD"].reshape(-1, 1)
+            val_CM = downstream_info["val_CM"].reshape(-1, 1)
 
-            coeffs_CL = self._ridge_solve(CL_train)
-            coeffs_CD = self._ridge_solve(CD_train)
-            coeffs_CM = self._ridge_solve(CM_train)
-
-            train_errs = {
-                "CL": torch.mean(torch.abs(CL_train - X_train @ coeffs_CL)).item(),
-                "CD": torch.mean(torch.abs(CD_train - X_train @ coeffs_CD)).item(),
-                "CM": torch.mean(torch.abs(CM_train - X_train @ coeffs_CM)).item(),
-            }
+            val_alpha_scaled = self._scale(val_alpha, nfConfig.AoA_min, nfConfig.AoA_max)
+            val_Re_scaled = self._scale(val_Re, nfConfig.Re_min, nfConfig.Re_max)
+            
+            X_val = self._chebyshev_basis(val_alpha_scaled, val_Re_scaled)
+            
+            pred_CL = X_val @ coeffs_CL
+            pred_CD = X_val @ coeffs_CD
+            pred_CM = X_val @ coeffs_CM
 
             val_errs = {
-                "CL": torch.mean(torch.abs(CL_val - X_val @ coeffs_CL)).item(),
-                "CD": torch.mean(torch.abs(CD_val - X_val @ coeffs_CD)).item(),
-                "CM": torch.mean(torch.abs(CM_val - X_val @ coeffs_CM)).item(),
+                "CL_mse": torch.mean((val_CL - pred_CL)**2).item(),
+                "CD_mse": torch.mean((val_CD - pred_CD)**2).item(),
+                "CM_mse": torch.mean((val_CM - pred_CM)**2).item(),
             }
 
-            self.logger.debug(
-                "Chebyshev errors:\n"
-                f"  CL -> train: {train_errs['CL']:.6f}, val: {val_errs['CL']:.6f}\n"
-                f"  CD -> train: {train_errs['CD']:.6f}, val: {val_errs['CD']:.6f}\n"
-                f"  CM -> train: {train_errs['CM']:.6f}, val: {val_errs['CM']:.6f}"
-            )
-
-        else:
-            coeffs_CL = self._ridge_solve(CL)
-            coeffs_CD = self._ridge_solve(CD)
-            coeffs_CM = self._ridge_solve(CM)      
+            if val_errs['CL_mse'] > 1e-2:
+                self.logger.critical(f"⚠️ CL validation error too high: {val_errs['CL_mse']:.2e}")
+            if val_errs['CD_mse'] > 1e-2:
+                self.logger.critical(f"⚠️ CD validation error too high: {val_errs['CD_mse']:.2e}")
+            if val_errs['CM_mse'] > 1e-2:
+                self.logger.critical(f"⚠️ CM validation error too high: {val_errs['CM_mse']:.2e}")      
             
         # propagate augmented lagrangian if present so downstream blocks can access it
         aug = downstream_info.get("augmented_lagrangian", 0.0)
