@@ -1,6 +1,9 @@
 # lifting-line (3D aggregation)
 
+from pathlib import Path
 import numpy as np
+import os
+import json
 import src.geometry as geom
 import aerosandbox as asb
 import pandas as pd
@@ -49,18 +52,88 @@ def v_trailing(P, A, B, A_w, B_w, gamma=1.0, rc=0.01):
 
 def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name):
     
-    airfoil_CST=asb.Airfoil(geom.normalize_airfoil_name(airfoil_name)).to_kulfan_airfoil()
+    #airfoil_CST=asb.Airfoil(geom.normalize_airfoil_name(airfoil_name)).to_kulfan_airfoil()
     y_half    = np.array(y_half, dtype=float)
     c_half    = np.array(c_half, dtype=float)
     xle_half  = np.array(xle_half, dtype=float)
     twist_half= np.array(twist_half, dtype=float)
     y, c, xle, twist = geom.mirror_full(y_half, c_half, xle_half, twist_half)
     
+    # --- Airfoil handling: database → custom CST → auto-generate ---
+    normalized_name = geom.normalize_airfoil_name(airfoil_name)
+    airfoil_asb = None
+
+    # Step 1: Try AeroSandbox database
+    try:
+        airfoil_asb = asb.Airfoil(normalized_name).to_kulfan_airfoil()
+        print(f"✓ Loaded '{airfoil_name}' from AeroSandbox database")
+    except (ValueError, TypeError, AttributeError):
+        pass  # Not in database, continue to CST
+    
+    # Step 2: Try loading existing CST JSON
+    if airfoil_asb is None:
+        basefolder = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cst_path = os.path.join(basefolder, "data", f"{airfoil_name}_CST.json")
+        
+        if os.path.exists(cst_path):
+            print(f"✓ Loading '{airfoil_name}' from custom CST: {cst_path}")
+            with open(cst_path, "r") as f:
+                cst_data = json.load(f)
+            
+            airfoil_asb = asb.KulfanAirfoil(
+                name=airfoil_name,
+                lower_weights=np.array(cst_data["Al"], dtype=float),
+                upper_weights=np.array(cst_data["Au"], dtype=float),
+                leading_edge_weight=0.0,
+                TE_thickness=0.0,
+            )
+        else:
+            # Step 3: Auto-generate CST from .dat file
+            print(f"⚠ '{airfoil_name}' not found in database or CST cache")
+            dat_path = os.path.join(basefolder, "Baseline_values", "airfoils", f"{airfoil_name}.dat")
+            
+            if not os.path.exists(dat_path):
+                raise FileNotFoundError(
+                    f"Cannot load airfoil '{airfoil_name}':\n"
+                    f"  - Not in AeroSandbox database\n"
+                    f"  - CST file not found: {cst_path}\n"
+                    f"  - .dat file not found: {dat_path}\n"
+                    f"Please provide either a .dat file or CST JSON."
+                )
+            
+            print(f"→ Auto-generating CST parameters from: {dat_path}")
+            
+            # Read and fit CST
+            points = geom.read_dat(dat_path)
+            upper, lower = geom.normalize_and_split(points)
+            fit = geom.fit_cst(upper, lower, n=7, N1=0.5, N2=1.0)
+            
+            # Save JSON for future runs
+            cst_data = {
+                "N1": fit["N1"],
+                "N2": fit["N2"],
+                "order_n": fit["n"],
+                "delta_te": fit["delta_te"],
+                "Au": fit["Au"].tolist(),
+                "Al": fit["Al"].tolist(),
+            }
+            Path(cst_path).write_text(json.dumps(cst_data, indent=2))
+            print(f"✓ Saved CST to: {cst_path}")
+            
+            # Create KulfanAirfoil
+            airfoil_asb = asb.KulfanAirfoil(
+                name=airfoil_name,
+                lower_weights=np.array(cst_data["Al"], dtype=float),
+                upper_weights=np.array(cst_data["Au"], dtype=float),
+                leading_edge_weight=0.0,
+                TE_thickness=0.0,
+            )
+
     """
-    Build panels & control geometry (Weissinger L method)
+    Build panels & control geometry 
     """
-    vortex_location = 0.75  # as fraction of local chord
-    ctrl_point_location = 0.75  # as fraction of local chord
+    vortex_location = 0.25  # as fraction of local chord
+    ctrl_point_location = 0.25  # as fraction of local chord
 
     n_st = len(y)
     n_pan = n_st - 1
@@ -100,7 +173,7 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
 
 
     """
-    Build downwash influence matrices for Weissinger L method.
+    Build downwash influence matrices for LLT.
     vortex_location, ctrl_point_location: fraction of local chord (0=LE, 1=TE)
     """
     A_q  = np.column_stack([x_qA, yA, np.zeros_like(yA)])
@@ -136,7 +209,7 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
 
     computation_params={'D_nf':D_nf,'D_tr':D_tr,'mirror_of':mirror_of, 'c_mid':c_mid, 'y_mid':y_mid,
                       'cbar':cbar,'x_c4_mid':x_c4_mid, 'x_ref':x_ref, 'z_ref':z_ref, 'dy':dy, 'S':S,
-                       'n_pan':n_pan, 'tw_mid':tw_mid, 'span': max(y_half)*2.0, 'airfoil_CST':airfoil_CST}
+                       'n_pan':n_pan, 'tw_mid':tw_mid, 'span': max(y_half)*2.0, 'airfoil_CST':airfoil_asb}
 
     return computation_params
 
@@ -197,7 +270,7 @@ def run_llt(airfoil_CST, aoa_range, vel_range, airflow, computation_params,
             w_nf = D_nf @ Gamma
             w_tr = D_tr @ Gamma
 
-            alpha_eff = alpha_geo - np.degrees(np.arctan2(w_tr, V_inf))
+            alpha_eff = alpha_geo - np.degrees(np.arctan2(w_nf, V_inf))
 
             # final section aerodynamics
             aer_final = airfoil_CST.get_aero_from_neuralfoil(alpha=alpha_eff, Re=Re_panels, mach=mach)
@@ -208,7 +281,7 @@ def run_llt(airfoil_CST, aoa_range, vel_range, airflow, computation_params,
             # per-unit-span loads
             Lp        = q_inf * c * cl
             Dp_prime  = q_inf * c * cd
-            Di_prime  = rho * Gamma * w_tr
+            Di_prime  = rho * Gamma * w_tr #Treffz plane here for better momentum conservation - consistent with flow5 methodology
             D_total   = Dp_prime + Di_prime
 
             # totals (reporting)
@@ -261,7 +334,7 @@ def run_llt_cuNF_grid(airfoil_cu,
                     device="cuda",
                     model_size="xlarge"):
     """
-    Vectorized Weissinger-L + NeuralFoil solver on an AoA-V_inf grid.
+    Vectorized LLT + NeuralFoil solver on an AoA-V_inf grid.
 
     Parameters
     ----------
@@ -464,7 +537,7 @@ def run_llt_cuNF_grid(airfoil_cu,
     w_tr = apply_D(D_tr, Gamma)
 
     # Final effective alpha from Trefftz
-    alpha_eff = alpha_geo - np.degrees(np.arctan2(w_tr, V_inf_3d))
+    alpha_eff = alpha_geo - np.degrees(np.arctan2(w_nf, V_inf_3d))
 
     aer_final = eval_nf(alpha_eff, Re_panels)
 
@@ -491,7 +564,7 @@ def run_llt_cuNF_grid(airfoil_cu,
 
     Lp       = q_inf_3d * c_pan * cl
     Dp_prime = q_inf_3d * c_pan * cd
-    Di_prime = rho * Gamma * w_tr
+    Di_prime = rho * Gamma * w_tr #Treffz plane here for better momentum conservation - consistent with flow5 methodology
     D_total  = Dp_prime + Di_prime
 
     # Integrals over span (last axis)

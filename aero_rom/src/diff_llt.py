@@ -1,4 +1,4 @@
-# Differentiable Weissinger-L lifting-line solver using cuNeuralFoil (Torch only).
+# Differentiable lifting-line solver using cuNeuralFoil (Torch only).
 #
 # This mirrors the logic of run_llt_cuNF_grid in llt.py, but implemented fully
 # in PyTorch so that gradients can propagate from 3D coefficients back to
@@ -212,7 +212,6 @@ class CuNFWeissingerLLT(torch.nn.Module):
         # Picard iteration
         for _ in range(self.n_iter):
             w_nf = apply_D(self.D_nf, Gamma)  # (B, n_pan)
-
             alpha_eff_iter = alpha_geo - torch.rad2deg(
                 torch.atan2(w_nf, V_2d)
             )
@@ -241,7 +240,7 @@ class CuNFWeissingerLLT(torch.nn.Module):
         w_tr = apply_D(self.D_tr, Gamma)
 
         alpha_eff = alpha_geo - torch.rad2deg(
-            torch.atan2(w_tr, V_2d)
+            torch.atan2(w_nf, V_2d)
         )
 
         # Final section aerodynamics

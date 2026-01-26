@@ -17,10 +17,15 @@ from src.config import load_config
 from src.io_utils import save_surface_csv
 from src.llt import run_llt_cuNF_grid
 from src.llt import LLT_computational_params as compute_llt_params
+from cuneuralfoil.cu_kulfan_airfoil import cuKulfanAirfoil
 import torch
 
 
-def run_pipeline(config_path: str) -> Dict[str, Any]:
+def run_pipeline(
+    config_path: str,
+    export_surfaces: bool = True,
+    export_ckpt: bool = True
+) -> Dict[str, Any]:
     """
     Pipeline:
       1) Run non-differentiable LLT + cuNeuralFoil on an (alpha, V) grid
@@ -32,15 +37,19 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
     ----------
     config_path : str
         Path to the JSON configuration file.
+    export_surfaces : bool, default=True
+        Whether to export CSV coefficient surfaces.
+    export_ckpt : bool, default=True
+        Whether to export the checkpoint file (.pt).
 
     Returns
     -------
     dict with:
       - "alpha_bounds", "alpha_steps"
       - "vel_bounds", "vel_steps"
-      - "csv_dir"    : directory with CSV surfaces
-      - "models_dir" : directory where checkpoint is stored
-      - "models_path": path to the metadata checkpoint (.pt)
+      - "csv_dir"    : directory with CSV surfaces (if exported)
+      - "models_dir" : directory where checkpoint is stored (if exported)
+      - "models_path": path to the metadata checkpoint (.pt, if exported)
     """
     cfg = load_config(config_path)
     outdir = Path(cfg.get("output_dir", "artifacts"))
@@ -100,7 +109,7 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         cfg["wing_geometry"]["airfoil"],
     )
 
-    from cuneuralfoil.cu_kulfan_airfoil import cuKulfanAirfoil
+  
 
     # we don't need gradients here, this is just for the surfaces
     airfoil_wing = cuKulfanAirfoil(
@@ -109,29 +118,30 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         requires_grad=False,
     )
 
-    df_wing = run_llt_cuNF_grid(
-        airfoil_wing,
-        AoA_grid,
-        V_inf_grid,
-        airflow,
-        comp_wing,
-        n_iter=n_iter,
-        beta=beta,
-        tol=tol,
-        enforce_symmetry=enforce_symmetry,
-        device=device,
-        model_size=model_size,
-    )
+    if export_surfaces:
+        df_wing = run_llt_cuNF_grid(
+            airfoil_wing,
+            AoA_grid,
+            V_inf_grid,
+            airflow,
+            comp_wing,
+            n_iter=n_iter,
+            beta=beta,
+            tol=tol,
+            enforce_symmetry=enforce_symmetry,
+            device=device,
+            model_size=model_size,
+        )
 
-    alpha_vals_wing = np.sort(df_wing["AoA"].unique())
-    vel_vals_wing = np.sort(df_wing["V_inf"].unique())
-    CL_grid_wing = df_wing.pivot(index="AoA", columns="V_inf", values="CL").values
-    CD_grid_wing = df_wing.pivot(index="AoA", columns="V_inf", values="CD").values
-    CM_grid_wing = df_wing.pivot(index="AoA", columns="V_inf", values="CM_pitch").values
+        alpha_vals_wing = np.sort(df_wing["AoA"].unique())
+        vel_vals_wing = np.sort(df_wing["V_inf"].unique())
+        CL_grid_wing = df_wing.pivot(index="AoA", columns="V_inf", values="CL").values
+        CD_grid_wing = df_wing.pivot(index="AoA", columns="V_inf", values="CD").values
+        CM_grid_wing = df_wing.pivot(index="AoA", columns="V_inf", values="CM_pitch").values
 
-    save_surface_csv(raw_dir / "cl_wing.csv", alpha_vals_wing, vel_vals_wing, CL_grid_wing, "CL")
-    save_surface_csv(raw_dir / "cd_wing.csv", alpha_vals_wing, vel_vals_wing, CD_grid_wing, "CD")
-    save_surface_csv(raw_dir / "cm_wing.csv", alpha_vals_wing, vel_vals_wing, CM_grid_wing, "CM")
+        save_surface_csv(raw_dir / "cl_wing.csv", alpha_vals_wing, vel_vals_wing, CL_grid_wing, "CL")
+        save_surface_csv(raw_dir / "cd_wing.csv", alpha_vals_wing, vel_vals_wing, CD_grid_wing, "CD")
+        save_surface_csv(raw_dir / "cm_wing.csv", alpha_vals_wing, vel_vals_wing, CM_grid_wing, "CM")
 
     # ============================================================
     # 2) ELEVATOR: geometry + CSV surfaces
@@ -150,62 +160,64 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         requires_grad=False,
     )
 
-    df_elev = run_llt_cuNF_grid(
-        airfoil_elev,
-        AoA_grid,
-        V_inf_grid,
-        airflow,
-        comp_elev,
-        n_iter=n_iter,
-        beta=beta,
-        tol=tol,
-        enforce_symmetry=enforce_symmetry,
-        device=device,
-        model_size=model_size,
-    )
+    if export_surfaces:
+        df_elev = run_llt_cuNF_grid(
+            airfoil_elev,
+            AoA_grid,
+            V_inf_grid,
+            airflow,
+            comp_elev,
+            n_iter=n_iter,
+            beta=beta,
+            tol=tol,
+            enforce_symmetry=enforce_symmetry,
+            device=device,
+            model_size=model_size,
+        )
 
-    alpha_vals_elev = np.sort(df_elev["AoA"].unique())
-    vel_vals_elev = np.sort(df_elev["V_inf"].unique())
-    CL_grid_elev = df_elev.pivot(index="AoA", columns="V_inf", values="CL").values
-    CD_grid_elev = df_elev.pivot(index="AoA", columns="V_inf", values="CD").values
-    CM_grid_elev = df_elev.pivot(index="AoA", columns="V_inf", values="CM_pitch").values
+        alpha_vals_elev = np.sort(df_elev["AoA"].unique())
+        vel_vals_elev = np.sort(df_elev["V_inf"].unique())
+        CL_grid_elev = df_elev.pivot(index="AoA", columns="V_inf", values="CL").values
+        CD_grid_elev = df_elev.pivot(index="AoA", columns="V_inf", values="CD").values
+        CM_grid_elev = df_elev.pivot(index="AoA", columns="V_inf", values="CM_pitch").values
 
-    save_surface_csv(raw_dir / "cl_elevator.csv", alpha_vals_elev, vel_vals_elev, CL_grid_elev, "CL")
-    save_surface_csv(raw_dir / "cd_elevator.csv", alpha_vals_elev, vel_vals_elev, CD_grid_elev, "CD")
-    save_surface_csv(raw_dir / "cm_elevator.csv", alpha_vals_elev, vel_vals_elev, CM_grid_elev, "CM")
+        save_surface_csv(raw_dir / "cl_elevator.csv", alpha_vals_elev, vel_vals_elev, CL_grid_elev, "CL")
+        save_surface_csv(raw_dir / "cd_elevator.csv", alpha_vals_elev, vel_vals_elev, CD_grid_elev, "CD")
+        save_surface_csv(raw_dir / "cm_elevator.csv", alpha_vals_elev, vel_vals_elev, CM_grid_elev, "CM")
 
     # ============================================================
     # 3) Save a *lightweight* checkpoint with metadata only
     # ============================================================
     models_path = models_dir / "3d_blocks.pt"
 
-    torch.save(
-        {
-            # Just enough info to rebuild the blocks later
-            "config_path": config_path,
-            "device": device,
-            "model_size": model_size,
-            "n_iter": n_iter,
-            "beta": beta,
-            "tol": tol,
-            "enforce_symmetry": enforce_symmetry,
-            # store flow + geometry config so we don't depend on external files changing
-            "flow": cfg["flow"],
-            "wing_geometry": cfg["wing_geometry"],
-            "elevator_geometry": cfg["elevator_geometry"],
-            # whether we want gradients on these shapes by default
-            "wing_requires_grad": True,
-            "elevator_requires_grad": cfg.get("elevator_requires_grad", False),
-        },
-        models_path,
-    )
+    if export_ckpt:
+        torch.save(
+            {
+                # Just enough info to rebuild the blocks later
+                "config_path": config_path,
+                "device": device,
+                "model_size": model_size,
+                "n_iter": n_iter,
+                "beta": beta,
+                "tol": tol,
+                "enforce_symmetry": enforce_symmetry,
+                # store flow + geometry config so we don't depend on external files changing
+                "flow": cfg["flow"],
+                "wing_geometry": cfg["wing_geometry"],
+                "elevator_geometry": cfg["elevator_geometry"],
+                # whether we want gradients on these shapes by default
+                "wing_requires_grad": True,
+                "elevator_requires_grad": cfg.get("elevator_requires_grad", False),
+            },
+            models_path,
+        )
 
     return {
         "alpha_bounds": (float(alphas.min()), float(alphas.max())),
         "alpha_steps": float(cfg["flow"]["alpha_step"]),
         "vel_bounds": (float(vels.min()), float(vels.max())),
         "vel_steps": float(cfg["flow"]["vel_step"]),
-        "csv_dir": str(raw_dir),
-        "models_dir": str(models_dir),
-        "models_path": str(models_path),
+        "csv_dir": str(raw_dir) if export_surfaces else None,
+        "models_dir": str(models_dir) if export_ckpt else None,
+        "models_path": str(models_path) if export_ckpt else None,
     }

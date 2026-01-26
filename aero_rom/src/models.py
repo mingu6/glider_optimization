@@ -63,16 +63,36 @@ class _Base3DCoeff:
     # ---------------------------------------------
     # Backward: gradients wrt shape parameters
     # ---------------------------------------------
-    def backward(self, alpha_deg, V_inf):
+    def backward(
+        self,
+        alpha_deg,
+        V_inf,
+        *,
+        v=None,
+        tangent=None,
+        return_dict: bool = False
+    ):
         """Compute gradients of this coefficient wrt the chosen parameters.
 
         This uses PyTorch autograd under the hood. The gradients are with
         respect to the tensors given in `params` at construction time.
+        
+        Supports VJP (vector-Jacobian product) and JVP (Jacobian-vector product)
+        for integration into larger differentiable pipelines.
 
         Parameters
         ----------
         alpha_deg : float or tensor
         V_inf : float or tensor
+        v : float or torch.Tensor, optional
+            Upstream gradient scalar for VJP computation.
+            If provided, returns v * dC/dp instead of dC/dp.
+        tangent : list[torch.Tensor], optional
+            Tangent vectors for JVP computation.
+            Returns dot(dC/dp, tangent) as a scalar.
+        return_dict : bool, default=False
+            If True, return dict with keys "grads", "vjp", "jvp".
+            If False (default), return grads or VJP directly.
 
         Returns
         -------
@@ -80,6 +100,8 @@ class _Base3DCoeff:
             List of gradients dC/dp for each parameter tensor p in `params`.
             If a parameter is not connected to the coefficient, its gradient
             will be returned as None.
+        OR dict (if return_dict=True)
+            {"grads": [...], "vjp": [...] or None, "jvp": scalar or None}
         """
         # Ensure no stale gradients
         for p in self.params:
@@ -98,8 +120,28 @@ class _Base3DCoeff:
             retain_graph=False,
             allow_unused=True,
         )
+        grads = list(grads)
 
-        return list(grads)
+        # Compute VJP if v is provided
+        vjp = None
+        if v is not None:
+            v_scalar = float(v) if not isinstance(v, torch.Tensor) else v.item()
+            vjp = [v_scalar * g if g is not None else None for g in grads]
+        
+        # Compute JVP if tangent is provided
+        jvp = None
+        if tangent is not None:
+            jvp = 0.0
+            for g, t in zip(grads, tangent):
+                if g is not None and t is not None:
+                    jvp += (g * t).sum().item()
+        
+        # Return based on format requested
+        if return_dict:
+            return {"grads": grads, "vjp": vjp, "jvp": jvp}
+        else:
+            # Default: return VJP if v provided, else raw gradients
+            return vjp if vjp is not None else grads
 
 
 class ClModel(_Base3DCoeff):
