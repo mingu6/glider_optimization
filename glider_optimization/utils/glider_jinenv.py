@@ -57,13 +57,13 @@ class GliderPerching :
         l_w_f = -0.015                                   # vector from CoM to centroid of wing (positive means wing is in front of CoM)
         l = 0.26                                        # vector from CoM to start of elevator (attachment point to body)
         l_e = 0.02                                      # distance to centroid of elevator from start (attachment point to body)
-        rho = 1.2041                                    # assume 20 degrees C
+        rho = 1.225                                    # assume Standard sea-level air density
         m_f = 0.4 * m                                   # mass of fuselage
         l_w = 0.5*(l_w_i+l_w_f)
         g = 9.81
         S_w = 0.158
         S_e = 0.017
-        mu_air = 1.81e-5
+        mu_air = 1.789e-5                               # assume Standard sea-level air dynamic viscosity      
         
         chebyshev_deg = self.config.reducedModel.chebyshev_degree
 
