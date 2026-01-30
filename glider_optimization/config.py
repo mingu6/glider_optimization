@@ -43,6 +43,21 @@ class NeuralFoilSamplingConfig(BaseModel):
     min_avg_Cl_Cd: float = 2.0
     rho: float = 10.0
 
+    # Optional: upgrade 2D sampling to 3D LLT
+    use_3d_llt: bool = False
+
+    # Path to aero_rom checkpoint (contains wing geometry + flow used to invert Re -> V)
+    llt_ckpt_path: str = "aero_rom/artifacts/models/3d_blocks.pt"
+
+    # Optional overrides (if None, fall back to checkpoint values)
+    llt_n_iter: int | None = None
+    llt_beta: float | None = None
+    llt_tol: float | None = None
+    llt_enforce_symmetry: bool | None = None
+
+    # cuNF size used inside LLT (defaults to neuralFoil_size)
+    llt_model_size: str | None = None
+    
     @field_validator("neuralFoil_size")
     def check_neuralFoil_size(cls, v):
         allowed = {"xxsmall", "xsmall", "small", "medium", "large", "xlarge", "xxlarge", "xxxlarge"}
