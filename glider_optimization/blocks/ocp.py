@@ -36,7 +36,7 @@ class OCP(Block):
         self.coc.setPathInequCstr(self.env.path_inequ)
         self.coc.diffCPMP()
         
-        self.init_state = [-6.5, 0 , 0. , 0., 7., 0. , 0., 0.01]
+        self.init_state = [-8.5, 0 , 0. , 0., 6., 3. , 0., 0.01]
         
         
     @override

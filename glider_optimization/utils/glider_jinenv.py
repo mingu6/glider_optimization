@@ -52,13 +52,13 @@ class GliderPerching :
 
     def initDyn(self):
         # set the global parameters
-        m = 0.065
-        l_w_i = -0.005                                   # vector from CoM to centroid of wing (positive means wing is in front of CoM)
-        l_w_f = -0.015                                   # vector from CoM to centroid of wing (positive means wing is in front of CoM)
-        l = 0.26                                        # vector from CoM to start of elevator (attachment point to body)
-        l_e = 0.02                                      # distance to centroid of elevator from start (attachment point to body)
-        rho = 1.2041                                    # assume 20 degrees C
-        m_f = 0.4 * m                                   # mass of fuselage
+        m = 0.065                  # Kg 
+        l_w_i = -0.005             # vector from CoM to centroid of wing (positive means wing is in front of CoM)
+        l_w_f = -0.015             # vector from CoM to centroid of wing (positive means wing is in front of CoM)
+        l = 0.26                   # vector from CoM to start of elevator (attachment point to body)
+        l_e = 0.02                 # distance to centroid of elevator from start (attachment point to body)
+        rho = 1.2041               # assume 20 degrees C
+        m_f = 0.4 * m              # mass of fuselage
         l_w = 0.5*(l_w_i+l_w_f)
         g = 9.81
         S_w = 0.158
@@ -140,9 +140,9 @@ class GliderPerching :
         M_w = 0.5 * rho * v_w**2 * S_w * chord * CM_w
 
         alpha_e = theta + phi - atan2(z_edot, x_edot)
-        v_e = sqrt(x_edot * x_edot + z_edot * z_edot + 1e-8)    # flow/air speed
-        F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)          # lift force vector (proportional to)
-        F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)         # drag force vector (proportional to)
+        v_e = sqrt(x_edot * x_edot + z_edot * z_edot + 1e-8)   # flow/air speed
+        F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)    # lift force vector (proportional to)
+        F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)   # drag force vector (proportional to)
         F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
         M_e = 0.5 * rho * v_e**2 * S_e * chord * self.C_M(alpha_e)
 

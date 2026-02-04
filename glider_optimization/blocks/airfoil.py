@@ -106,7 +106,7 @@ class Airfoil(Block):
 
         with torch.no_grad():
             self.TE_thickness_param.clamp_(1e-4, 0.01)
-            min_gap = 0.01
+            min_gap = 0.05
             
             self.upper_params.data = torch.maximum(
                 self.upper_params.data,
@@ -188,7 +188,7 @@ class Airfoil(Block):
         plt.close(fig)
 
 
-    def save_gif(self, filename="airfoil_evolution.gif", fps=1):
+    def save_gif(self, filename="airfoil_evolution.gif", fps=1):        
         if self.frames:
             log_dir = Path(self.config.io.checkpoint_dir)
             imageio.mimsave(log_dir/filename, self.frames, fps=fps)
