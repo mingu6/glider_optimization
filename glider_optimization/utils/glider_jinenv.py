@@ -25,10 +25,10 @@ class GliderPerching :
     def C_M(self, alpha):
         return -self.C_L(alpha) * 0.25
 
-    def mc_to_wcom(self, l_w):
+    def mc_to_wcom(self, l_w):      # distance from leading edge to wing center of mass, constant 
         return l_w+0.003
     
-    def scale(self, x, min, max):
+    def scale(self, x, min, max): # scale x in [min, max] to [-1, 1] - Only for the Chebyshev basis
         return 2*(x - min)/(max - min) - 1
     
     def cheb_basis_2d(self, alpha_s, Re_s, deg):
@@ -99,7 +99,7 @@ class GliderPerching :
         l_w_m = (l_w_i + l_w_f) / 2
 
         com_w = l_w_m + self.mc_to_wcom(l_w_m)
-        com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption)                
+        com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption) - aligned with the fuselage               
         com_f = l_f
         com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
 

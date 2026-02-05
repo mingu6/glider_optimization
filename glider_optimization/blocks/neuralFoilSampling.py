@@ -47,7 +47,7 @@ class NeuralFoilSampling(Block):
         self.last_airfoil = None
         
         self.lambda_conf = torch.tensor(0., device=self.device, requires_grad=False)
-        self.rho = nfConfig.rho
+        self.sigma = nfConfig.sigma
         self.min_confidence = nfConfig.min_confidence
         
         self.min_avg_Cl_Cd = nfConfig.min_avg_Cl_Cd
@@ -185,7 +185,7 @@ class NeuralFoilSampling(Block):
 
         constraint_violation = max(0.0, self.min_confidence - conf_mean)
         lambda_val = float(self.lambda_conf.detach().cpu().item()) if isinstance(self.lambda_conf, torch.Tensor) else float(self.lambda_conf)
-        aug_lagrangian = lambda_val * constraint_violation + 0.5 * float(self.rho) * (constraint_violation ** 2)
+        aug_lagrangian = lambda_val * constraint_violation + 0.5 * float(self.sigma) * (constraint_violation ** 2)
 
         # Cl/Cd constraint
         CL_fwd = self._last_aero_coeff["CL"].detach()
@@ -195,7 +195,7 @@ class NeuralFoilSampling(Block):
         
         violation_clcd = max(0.0, self.min_avg_Cl_Cd - cl_cd_mean)
         lambda_clcd_val = float(self.lambda_clcd.detach().cpu().item()) if isinstance(self.lambda_clcd, torch.Tensor) else float(self.lambda_clcd)
-        aug_lagrangian += lambda_clcd_val * violation_clcd + 0.5 * float(self.rho) * (violation_clcd ** 2)
+        aug_lagrangian += lambda_clcd_val * violation_clcd + 0.5 * float(self.sigma) * (violation_clcd ** 2)
 
         # Validation forward pass
         B_val = self.alpha_val.shape[0]
@@ -255,14 +255,14 @@ class NeuralFoilSampling(Block):
         
         constraint = self.min_confidence - conf.mean() 
         constraint_violation = torch.relu(constraint)
-        constraint_lagrangian = self.lambda_conf * constraint_violation + self.rho/2 * (constraint_violation**2)
+        constraint_lagrangian = self.lambda_conf * constraint_violation + self.sigma/2 * (constraint_violation**2)
 
         # Cl/Cd constraint backward
         CD_safe = torch.clamp(CD, min=1e-5)
         cl_cd_ratio = CL / CD_safe
         constraint_clcd = self.min_avg_Cl_Cd - cl_cd_ratio.mean()
         violation_clcd = torch.relu(constraint_clcd)
-        constraint_lagrangian_clcd = self.lambda_clcd * violation_clcd + self.rho/2 * (violation_clcd**2)
+        constraint_lagrangian_clcd = self.lambda_clcd * violation_clcd + self.sigma/2 * (violation_clcd**2)
         
         constraint_lagrangian = constraint_lagrangian + constraint_lagrangian_clcd
         
@@ -300,8 +300,8 @@ class NeuralFoilSampling(Block):
             self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[3]")
             
         with torch.no_grad():
-            self.lambda_conf += self.rho * constraint_violation.mean().detach()
-            self.lambda_clcd += self.rho * violation_clcd.mean().detach()
+            self.lambda_conf += self.sigma * constraint_violation.mean().detach()
+            self.lambda_clcd += self.sigma * violation_clcd.mean().detach()
             
         return {
             "dupper_params": grad[0] + grad_lagrangian[0],
