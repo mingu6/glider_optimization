@@ -1,7 +1,6 @@
 from ..blockBase import Block
 from typing import override
 from ..config import Config
-from ..utils.cu_kulfan_airfoil import cuKulfanAirfoil
 from pathlib import Path
 from typing import Dict, Any
 import aerosandbox as asb
@@ -14,6 +13,7 @@ import warnings
 import torch.nn as nn
 import torch
 import torch.optim.lr_scheduler as lr_scheduler
+import wandb
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -28,14 +28,54 @@ class Airfoil(Block):
         self.leading_edge_param = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
         self.TE_thickness_param = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
 
-        self.optimizer = torch.optim.Adam([self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param], lr=af_conf.lr)
-
-        # iteration counter (updated in forward)
+        self.optimizer = torch.optim.Adam(
+            [self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param],
+            lr=af_conf.lr
+        )
+        
         self._iter = 0
+        self.scheduler = self._create_scheduler(af_conf)
+        self.frames = []
 
-        # optional LR scheduler (configured via `config.airfoil.lr_schedule`)
-        self.scheduler = None
+    @override
+    def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
+        self._iter = downstream_info.get("iteration", self._iter)
+
+        if self._iter % self.config.io.log_every == 0:
+            self.plot()
+            if self.config.io.wandb.enabled:
+                self._log_params_to_wandb()
+        
+        return {
+            "upper_weights": self.upper_params,
+            "lower_weights": self.lower_params,
+            "leading_edge_weight": self.leading_edge_param,
+            "TE_thickness": self.TE_thickness_param,
+            "iteration": downstream_info["iteration"]
+        }
+
+    def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
+        self._apply_gradients(upstream_grads)
+        self.optimizer.step()
+        self._step_scheduler(upstream_grads)
+        self._enforce_constraints()
+        
+        if self._iter == self.config.run.max_outer_iters - 1 and not self.config.io.wandb.enabled:
+            self.save_gif(fps=self.config.io.gif_fps)
+        
+        return {}
+
+    def get_lr(self) -> float:
+        try:
+            return float(self.optimizer.param_groups[0]["lr"])
+        except Exception:
+            return float(getattr(self.config.airfoil, "lr", 0.0))
+
+    def _create_scheduler(self, af_conf):
         sched_conf = getattr(af_conf, "lr_schedule", None)
+        if sched_conf is None:
+            return None
+
         def _get(c, k, default):
             if c is None:
                 return default
@@ -43,109 +83,72 @@ class Airfoil(Block):
                 return c.get(k, default)
             return getattr(c, k, default)
 
-        if sched_conf is not None:
-            typ = _get(sched_conf, "type", "exponential")
-            if typ == "exponential":
-                gamma = _get(sched_conf, "gamma", 0.99)
-                self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
-            elif typ == "step":
-                step_size = _get(sched_conf, "step_size", 100)
-                gamma = _get(sched_conf, "gamma", 0.1)
-                self.scheduler = lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
-            elif typ == "cosine":
-                T_max = _get(sched_conf, "T_max", 100)
-                self.scheduler = lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=T_max)
-            elif typ == "reduce_on_plateau":
-                mode = _get(sched_conf, "mode", "min")
-                factor = _get(sched_conf, "factor", 0.1)
-                patience = _get(sched_conf, "patience", 10)
-                self.scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode=mode, factor=factor, patience=patience, verbose=True)
-
-        self.frames = []
-
-    @override
-    def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        # keep track of the current iteration (used for scheduling/logging)
-        self._iter = downstream_info.get("iteration", self._iter)
-
-        if self._iter % self.config.io.log_every == 0:
-            self.plot()
-        return {
-            "upper_weights": self.upper_params, 
-            "lower_weights": self.lower_params, 
-            "leading_edge_weight": self.leading_edge_param, 
-            "TE_thickness": self.TE_thickness_param, 
-        }
-
-    def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
-        self.optimizer.zero_grad()
+        typ = _get(sched_conf, "type", "exponential")
         
+        if typ == "exponential":
+            gamma = _get(sched_conf, "gamma", 0.99)
+            return lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
+        elif typ == "step":
+            step_size = _get(sched_conf, "step_size", 100)
+            gamma = _get(sched_conf, "gamma", 0.1)
+            return lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
+        elif typ == "cosine":
+            T_max = _get(sched_conf, "T_max", 100)
+            return lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=T_max)
+        elif typ == "reduce_on_plateau":
+            mode = _get(sched_conf, "mode", "min")
+            factor = _get(sched_conf, "factor", 0.1)
+            patience = _get(sched_conf, "patience", 10)
+            return lr_scheduler.ReduceLROnPlateau(self.optimizer, mode=mode, factor=factor, patience=patience, verbose=True)
+        
+        return None
+
+    def _log_params_to_wandb(self):
+        metrics = {"airfoil/learning_rate": self.get_lr()}
+        
+        for i, val in enumerate(self.upper_params.detach().numpy()):
+            metrics[f"airfoil/upper_params_{i}"] = float(val)
+        for i, val in enumerate(self.lower_params.detach().numpy()):
+            metrics[f"airfoil/lower_params_{i}"] = float(val)
+        
+        metrics["airfoil/leading_edge_weight"] = float(self.leading_edge_param.detach().numpy()[0])
+        metrics["airfoil/TE_thickness"] = float(self.TE_thickness_param.detach().numpy()[0])
+        
+        wandb.log(metrics, step=self._iter)
+
+    def _apply_gradients(self, upstream_grads):
+        self.optimizer.zero_grad()
         self.upper_params.grad = upstream_grads["dupper_params"]
         self.lower_params.grad = upstream_grads["dlower_params"]
         self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
-        self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]        
-        
-        self.optimizer.step()        
-        # step the LR scheduler if present
-        if self.scheduler is not None:
-            try:
-                # ReduceLROnPlateau requires a metric
-                if isinstance(self.scheduler, lr_scheduler.ReduceLROnPlateau):
-                    metric = None
-                    if isinstance(upstream_grads, dict):
-                        metric = upstream_grads.get("outer_loss", upstream_grads.get("loss", None))
-                    if metric is not None:
-                        self.scheduler.step(metric)
-                    else:
-                        warnings.warn("ReduceLROnPlateau scheduler configured but no metric found in upstream_grads; skipping step.")
-                else:
-                    # step by iteration
-                    self.scheduler.step()
-            except Exception:
-                warnings.warn("LR scheduler step failed; continuing without scheduling.")
+        self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]
 
+    def _step_scheduler(self, upstream_grads):
+        if self.scheduler is None:
+            return
+
+        try:
+            if isinstance(self.scheduler, lr_scheduler.ReduceLROnPlateau):
+                metric = None
+                if isinstance(upstream_grads, dict):
+                    metric = upstream_grads.get("outer_loss", upstream_grads.get("loss", None))
+                if metric is not None:
+                    self.scheduler.step(metric)
+                else:
+                    warnings.warn("ReduceLROnPlateau scheduler configured but no metric found in upstream_grads; skipping step.")
+            else:
+                self.scheduler.step()
+        except Exception:
+            warnings.warn("LR scheduler step failed; continuing without scheduling.")
+
+    def _enforce_constraints(self):
         with torch.no_grad():
             self.TE_thickness_param.clamp_(1e-4, 0.01)
-            min_gap = 0.01
-            
+            min_gap = 0.05
             self.upper_params.data = torch.maximum(
                 self.upper_params.data,
                 self.lower_params.data + min_gap
             )
-        
-        # Projection
-        
-        '''
-        # 1) Bounds for stability
-        self.current_upper_params = np.clip(self.current_upper_params, -2.0, 2.0)
-        self.current_lower_params = np.clip(self.current_lower_params, -2.0, 2.0)
-
-        # 2) Upper must stay above lower
-        min_gap = 0.002
-        self.current_upper_params = np.maximum(
-            self.current_upper_params,
-            self.current_lower_params + min_gap
-        )
-
-        # 3) Enforce minimum average thickness (volume surrogate)
-        min_avg_thickness = 0.01
-        avg_thickness = np.mean(self.current_upper_params - self.current_lower_params)
-        if avg_thickness < min_avg_thickness:
-            scale = min_avg_thickness / (avg_thickness + 1e-8)
-            mid = 0.5 * (self.current_upper_params + self.current_lower_params)
-            half = (self.current_upper_params - self.current_lower_params) * 0.5 * scale
-            self.current_upper_params = mid + half
-            self.current_lower_params = mid - half
-        '''
-            
-        return {}
-
-    def get_lr(self) -> float:
-        """Return current learning rate for the optimizer (first param group)."""
-        try:
-            return float(self.optimizer.param_groups[0]["lr"])
-        except Exception:
-            return float(getattr(self.config.airfoil, "lr", 0.0))
 
     def plot(self):
         airfoilConfig = self.config.airfoil
@@ -183,12 +186,16 @@ class Airfoil(Block):
         fig.canvas.draw()
         buf, (w, h) = fig.canvas.print_to_buffer()
         frame = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)[..., :3]
-        self.frames.append(frame)
+        
+        if self.config.io.wandb.enabled:
+            wandb.log({"airfoil/shape": wandb.Image(frame, caption=f"Airfoil Iter {self._iter}")}, step=self._iter)
+        else:
+            self.frames.append(frame)
         
         plt.close(fig)
 
 
-    def save_gif(self, filename="airfoil_evolution.gif", fps=1):
+    def save_gif(self, filename="airfoil_evolution.gif", fps=1):        
         if self.frames:
             log_dir = Path(self.config.io.checkpoint_dir)
             imageio.mimsave(log_dir/filename, self.frames, fps=fps)

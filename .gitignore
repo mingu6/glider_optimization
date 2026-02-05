@@ -1,5 +1,6 @@
 experiments/*
 runs/*
+wandb/*
 *.gif
 *.pyc
 *.log

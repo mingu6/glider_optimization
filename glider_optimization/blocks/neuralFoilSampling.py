@@ -244,6 +244,7 @@ class NeuralFoilSampling(Block):
             "val_CL": val_aero["CL"].detach(),
             "val_CD": val_aero["CD"].detach(),
             "val_CM": val_aero["CM"].detach(),
+            "iteration": downstream_info["iteration"]
         }
 
     @override

@@ -140,9 +140,9 @@ class GliderPerching :
         M_w = 0.5 * rho * v_w**2 * S_w * chord * CM_w
 
         alpha_e = theta + phi - atan2(z_edot, x_edot)
-        v_e = sqrt(x_edot * x_edot + z_edot * z_edot + 1e-8)    # flow/air speed
-        F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)          # lift force vector (proportional to)
-        F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)         # drag force vector (proportional to)
+        v_e = sqrt(x_edot * x_edot + z_edot * z_edot + 1e-8)   # flow/air speed
+        F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)    # lift force vector (proportional to)
+        F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)   # drag force vector (proportional to)
         F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
         M_e = 0.5 * rho * v_e**2 * S_e * chord * self.C_M(alpha_e)
 
@@ -173,10 +173,6 @@ class GliderPerching :
         self.dpath_cost_du = gradient(self.path_cost, self.U)
         
         self.final_cost = err.T @ diag(state_weights) @ err
-
-        self.dfinal_cost_dx = gradient(self.final_cost, self.X)
-        self.dfinal_cost_dx_fn = Function("dfinal_cost_dx_fn", [self.X], [self.dfinal_cost_dx])
-        self.dfinal_cost_du_fn = Function("dfinal_cost_du_fn", [self.X], [self.dfinal_cost_dx])
         
     def initConstraints(self, min_phi, max_phi, max_u=None):
         # set path constraint h_final(x)
