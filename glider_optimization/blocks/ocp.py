@@ -1,3 +1,4 @@
+from pathlib import Path
 from ..blockBase import Block
 from typing import Dict, Any, override
 from ..utils.go_safe_pdp import COCsys
@@ -8,6 +9,8 @@ from casadi import pi, vertcat
 import numpy as np
 import torch
 import logging
+import wandb
+import tempfile
 
 class OCP(Block):
     @override
@@ -22,7 +25,7 @@ class OCP(Block):
         self.env.initDyn()
         env_dyn = self.env.X + self.env.X[-1] * self.env.f
         
-        self.env.initCost(state_weights=[10., 10., 5., 0.01, 5., 5., 2., 0.01], wu=0.1)
+        self.env.initCost(state_weights=config.ocp.terminal_state_weight, wu=config.ocp.stage_control_weight)
         self.env.initConstraints(-pi/3, pi/8, 13)
         
         self.coc.setAuxvarVariable(vertcat(self.env.dyn_auxvar))
@@ -36,7 +39,7 @@ class OCP(Block):
         self.coc.setPathInequCstr(self.env.path_inequ)
         self.coc.diffCPMP()
         
-        self.init_state = [-8.5, 0 , 0. , 0., 6., 3. , 0., 0.01]
+        self.init_state = config.ocp.initial_state
         
         
     @override
@@ -51,15 +54,15 @@ class OCP(Block):
 
         if not self.last_traj_COC["success"]:
             self.logger.critical(f"⚠️ IPOPT couldn't find a solution")
-
-        cost_val = float(self.last_traj_COC["cost"][0][0])
-        aug = downstream_info.get("augmented_lagrangian", 0.0)
-        total_obj = cost_val + float(aug)
+            
+        num_iterations = self.config.run.max_outer_iters
+        iteration = downstream_info["iteration"]
+        if iteration == 0 or iteration == (num_iterations - 1):
+            self.plot(iteration)
 
         return {
-            "objective": total_obj,
-            "cost": cost_val,
-            "augmented_lagrangian": float(aug),
+            "trajectory": self.last_traj_COC,
+            "iteration": downstream_info["iteration"]
         }
     
     @override
@@ -68,13 +71,44 @@ class OCP(Block):
         auxsys_COC = self.coc.getAuxSys(opt_sol=self.last_traj_COC, threshold=1e-5)
         idoc_ctx = build_blocks_idoc(auxsys_COC, delta)
         traj_deriv_COC = idoc_full(idoc_ctx)
+
+        dJ_deps = upstream_grads["dJ_deps"]
         
-        state_traj = self.last_traj_COC['state_traj_opt']
-        dJdeps_traj = self.env.dfinal_cost_dx_fn(state_traj[-1])
-        depsdphi_traj = traj_deriv_COC['state_traj_opt']
-        dJ_dphi_np = (dJdeps_traj.T @ depsdphi_traj[-1]).T
-        dJ_dphi = torch.from_numpy(dJ_dphi_np.full()).float().to(self.device)
+        deps_dphi = traj_deriv_COC['state_traj_opt'][-1]
+        
+        dJ_dphi_np = deps_dphi.T @ dJ_deps
+        dJ_dphi = torch.from_numpy(dJ_dphi_np).float().to(self.device)
         dJ_dphi = dJ_dphi.view(3, -1)
 
         return {"dJ_dphi": dJ_dphi}
                 
+    def plot(self, iteration):
+        run_name = getattr(self.config.io, "run_name", "run")
+        traj = self.last_traj_COC
+
+        if self.config.io.wandb.enabled:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                title = Path(tmpdir) / f"{run_name}_traj_iter{iteration}"
+                self.env.play_animation(
+                    traj['state_traj_opt'],
+                    traj['control_traj_opt'],
+                    save_option=True,
+                    title=str(title),
+                    fps=self.config.io.gif_fps
+                )
+                gif_path = f"{title}.gif"
+                wandb.log(
+                    {f"trajectory/traj_iter_{iteration}": wandb.Video(gif_path, format="gif")},
+                    step=iteration
+                )
+        else:
+            out_dir = Path(self.config.io.checkpoint_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            title = out_dir / f"{run_name}_traj_iter{iteration}"
+            self.env.play_animation(
+                traj['state_traj_opt'],
+                traj['control_traj_opt'],
+                save_option=True,
+                title=str(title),
+                fps=self.config.io.gif_fps
+            )

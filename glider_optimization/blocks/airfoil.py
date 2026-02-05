@@ -1,7 +1,6 @@
 from ..blockBase import Block
 from typing import override
 from ..config import Config
-from ..utils.cu_kulfan_airfoil import cuKulfanAirfoil
 from pathlib import Path
 from typing import Dict, Any
 import aerosandbox as asb
@@ -14,6 +13,7 @@ import warnings
 import torch.nn as nn
 import torch
 import torch.optim.lr_scheduler as lr_scheduler
+import wandb
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -70,11 +70,25 @@ class Airfoil(Block):
 
         if self._iter % self.config.io.log_every == 0:
             self.plot()
+            if self.config.io.wandb.enabled:
+                wandb_metrics = {"airfoil/learning_rate": self.get_lr()}
+                
+                # Log all Kulfan parameters
+                for i, val in enumerate(self.upper_params.detach().numpy()):
+                    wandb_metrics[f"airfoil/upper_params_{i}"] = float(val)
+                for i, val in enumerate(self.lower_params.detach().numpy()):
+                    wandb_metrics[f"airfoil/lower_params_{i}"] = float(val)
+                
+                wandb_metrics["airfoil/leading_edge_weight"] = float(self.leading_edge_param.detach().numpy()[0])
+                wandb_metrics["airfoil/TE_thickness"] = float(self.TE_thickness_param.detach().numpy()[0])
+                
+                wandb.log(wandb_metrics, step=self._iter)
         return {
             "upper_weights": self.upper_params, 
             "lower_weights": self.lower_params, 
             "leading_edge_weight": self.leading_edge_param, 
             "TE_thickness": self.TE_thickness_param, 
+            "iteration": downstream_info["iteration"]
         }
 
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
@@ -112,32 +126,13 @@ class Airfoil(Block):
                 self.upper_params.data,
                 self.lower_params.data + min_gap
             )
-        
-        # Projection
-        
-        '''
-        # 1) Bounds for stability
-        self.current_upper_params = np.clip(self.current_upper_params, -2.0, 2.0)
-        self.current_lower_params = np.clip(self.current_lower_params, -2.0, 2.0)
-
-        # 2) Upper must stay above lower
-        min_gap = 0.002
-        self.current_upper_params = np.maximum(
-            self.current_upper_params,
-            self.current_lower_params + min_gap
-        )
-
-        # 3) Enforce minimum average thickness (volume surrogate)
-        min_avg_thickness = 0.01
-        avg_thickness = np.mean(self.current_upper_params - self.current_lower_params)
-        if avg_thickness < min_avg_thickness:
-            scale = min_avg_thickness / (avg_thickness + 1e-8)
-            mid = 0.5 * (self.current_upper_params + self.current_lower_params)
-            half = (self.current_upper_params - self.current_lower_params) * 0.5 * scale
-            self.current_upper_params = mid + half
-            self.current_lower_params = mid - half
-        '''
-            
+           
+           
+        num_iterations = self.config.run.max_outer_iters
+         
+        if self._iter == num_iterations - 1 and not self.config.io.wandb.enabled:
+            self.save_gif(fps=self.config.io.gif_fps)
+                            
         return {}
 
     def get_lr(self) -> float:
@@ -183,7 +178,11 @@ class Airfoil(Block):
         fig.canvas.draw()
         buf, (w, h) = fig.canvas.print_to_buffer()
         frame = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)[..., :3]
-        self.frames.append(frame)
+        
+        if self.config.io.wandb.enabled:
+            wandb.log({"airfoil/shape": wandb.Image(frame, caption=f"Airfoil Iter {self._iter}")}, step=self._iter)
+        else:
+            self.frames.append(frame)
         
         plt.close(fig)
 

@@ -115,6 +115,7 @@ class ReducedModel(Block):
             "phi_CD": coeffs_CD, 
             "phi_CM": coeffs_CM,
             "augmented_lagrangian": aug,
+            "iteration": downstream_info["iteration"]
         }
 
     @override

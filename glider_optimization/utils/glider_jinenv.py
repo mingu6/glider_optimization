@@ -173,10 +173,6 @@ class GliderPerching :
         self.dpath_cost_du = gradient(self.path_cost, self.U)
         
         self.final_cost = err.T @ diag(state_weights) @ err
-
-        self.dfinal_cost_dx = gradient(self.final_cost, self.X)
-        self.dfinal_cost_dx_fn = Function("dfinal_cost_dx_fn", [self.X], [self.dfinal_cost_dx])
-        self.dfinal_cost_du_fn = Function("dfinal_cost_du_fn", [self.X], [self.dfinal_cost_dx])
         
     def initConstraints(self, min_phi, max_phi, max_u=None):
         # set path constraint h_final(x)
