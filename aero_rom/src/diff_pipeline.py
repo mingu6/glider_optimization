@@ -20,6 +20,75 @@ from src.llt import LLT_computational_params as compute_llt_params
 from cuneuralfoil.cu_kulfan_airfoil import cuKulfanAirfoil
 import torch
 
+# ------------------------------------------------------------------
+# 3D geometry metadata (centroids)
+# ------------------------------------------------------------------
+# We store chordwise centroids for wing/elevator in the checkpoint so
+# glider_optimization can override the colleague's heuristic COM model
+# when 3D is enabled. This is intentionally cheap and runs once per
+# plane configuration (i.e. when you regenerate 3d_blocks.pt).
+
+def _polygon_area_centroid_x(pts: np.ndarray) -> tuple[float, float]:
+    """Return (area, x_centroid) of a closed polygon (x,z)."""
+    pts = np.asarray(pts, dtype=float)
+    if pts.shape[0] < 3:
+        return 0.0, 0.0
+    # ensure closed
+    if np.linalg.norm(pts[0] - pts[-1]) > 1e-12:
+        pts = np.vstack([pts, pts[0]])
+    x = pts[:, 0]
+    z = pts[:, 1]
+    cross = x[:-1] * z[1:] - x[1:] * z[:-1]
+    A = 0.5 * float(np.sum(cross))
+    if abs(A) < 1e-18:
+        return 0.0, float(np.mean(x[:-1]))
+    Cx = float(np.sum((x[:-1] + x[1:]) * cross) / (6.0 * A))
+    return abs(A), Cx
+
+
+def _normalized_airfoil_x_centroid(airfoil_name: str) -> float:
+    """Chordwise centroid x in normalized chord coordinates (0..1)."""
+    # Import here to keep aero_rom optional where possible.
+    import aerosandbox as asb
+    from src.geometry import normalize_airfoil_name
+
+    af = asb.Airfoil(normalize_airfoil_name(airfoil_name))
+    # AeroSandbox: TE->upper->LE->lower->TE, already in chord fraction.
+    pts = np.asarray(af.coordinates, dtype=float)
+    # Use (x, y) as (x, z) here.
+    area, cx = _polygon_area_centroid_x(pts)
+    # If centroid is slightly outside [0,1] due to numerical noise, clamp.
+    return float(np.clip(cx, 0.0, 1.0))
+
+
+def _spanwise_centroid_x(y_half, c_half, xle_half, airfoil_name: str) -> float:
+    """Approximate 3D chordwise centroid x using volume proxy integration."""
+    from src.geometry import mirror_full
+
+    y, c, xle, _ = mirror_full(
+        np.asarray(y_half, float),
+        np.asarray(c_half, float),
+        np.asarray(xle_half, float),
+        np.zeros_like(np.asarray(y_half, float)),
+    )
+    # Use mid-segment integration.
+    yA, yB = y[:-1], y[1:]
+    cA, cB = c[:-1], c[1:]
+    xA, xB = xle[:-1], xle[1:]
+    dy = (yB - yA)
+    y_mid = 0.5 * (yA + yB)
+    c_mid = 0.5 * (cA + cB)
+    xle_mid = 0.5 * (xA + xB)
+
+    xbar_norm = _normalized_airfoil_x_centroid(airfoil_name)
+
+    # Volume proxy weight: section area scales with c^2; thickness distribution constant.
+    w = (c_mid ** 2) * np.abs(dy)
+    x_mid = xle_mid + c_mid * xbar_norm
+    denom = float(np.sum(w))
+    if denom < 1e-18:
+        return float(np.mean(x_mid))
+    return float(np.sum(x_mid * w) / denom)
 
 def run_pipeline(
     config_path: str,
@@ -190,6 +259,23 @@ def run_pipeline(
     # ============================================================
     models_path = models_dir / "3d_blocks.pt"
 
+    # ------------------------------------------------------------------
+    # Chordwise centroids (for dynamics COM override in 3D mode)
+    # ------------------------------------------------------------------
+    # Computed once per plane config; cheap compared to running surfaces.
+    wing_centroid_x = _spanwise_centroid_x(
+        cfg["wing_geometry"]["y_half"],
+        cfg["wing_geometry"]["c_half"],
+        cfg["wing_geometry"]["xle_half"],
+        cfg["wing_geometry"]["airfoil"],
+    )
+    elev_centroid_x = _spanwise_centroid_x(
+        cfg["elevator_geometry"]["y_half"],
+        cfg["elevator_geometry"]["c_half"],
+        cfg["elevator_geometry"]["xle_half"],
+        cfg["elevator_geometry"]["airfoil"],
+    )
+
     if export_ckpt:
         torch.save(
             {
@@ -205,6 +291,10 @@ def run_pipeline(
                 "flow": cfg["flow"],
                 "wing_geometry": cfg["wing_geometry"],
                 "elevator_geometry": cfg["elevator_geometry"],
+                "centroid": {
+                    "wing_x": float(wing_centroid_x),
+                    "elevator_x": float(elev_centroid_x),
+                },
                 # whether we want gradients on these shapes by default
                 "wing_requires_grad": True,
                 "elevator_requires_grad": cfg.get("elevator_requires_grad", False),

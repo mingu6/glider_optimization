@@ -7,6 +7,8 @@ import torch
 from math import sqrt   
 import logging
 import numpy as np
+import aerosandbox as asb
+
 # Optional 3D LLT upgrade (uses aero_rom)
 try:
     from aero_rom.src.llt import LLT_computational_params as _LLT_params
@@ -54,6 +56,11 @@ class NeuralFoilSampling(Block):
         self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
         self.use_3d_llt = bool(getattr(nfConfig, "use_3d_llt", False))
 
+        # Elevator geometry treated as fixed for now (not optimized). In 3D mode we
+        # compute its coefficients once and cache them.
+        self._elevator_cached = False
+        self._elevator_aero_cached = None
+
         if self.use_3d_llt:
             if _LLT_params is None or _LLTImplicitFn is None:
                 raise ImportError(
@@ -65,11 +72,12 @@ class NeuralFoilSampling(Block):
             ckpt = torch.load(ckpt_path, map_location=self.device)
             flow = ckpt.get("flow", {})
             wing = ckpt.get("wing_geometry", {})
+            elev = ckpt.get("elevator_geometry", {})
 
             # Build LLT geometry once (airfoil name here is irrelevant: you optimize Kulfan params anyway)
             comp = _LLT_params(
                 wing["y_half"], wing["c_half"], wing["xle_half"], wing["twist_half"],
-                wing.get("airfoil", "naca0012"),
+                wing.get("airfoil", "naca4412"), # if the dict contains "airfoil" use it, otherwise default to "naca4412"
             )
 
             # Const tensors
@@ -115,6 +123,34 @@ class NeuralFoilSampling(Block):
             ms = ms_ov if ms_ov is not None else self.config.neuralFoilSampling.neuralFoil_size
             self._llt_model_size_id = torch.tensor(_LLT_MODEL_SIZE_TO_ID[ms], dtype=torch.int64, device=self.device)
             self._llt_device_id = torch.tensor(_LLT_DEVICE_TO_ID[self.device.type], dtype=torch.int64, device=self.device)
+            
+            # --- Elevator LLT context (fixed) ---
+            if elev:
+                comp_e = _LLT_params(
+                    elev["y_half"], elev["c_half"], elev["xle_half"], elev["twist_half"],
+                    elev.get("airfoil", "naca0012"), # if the dict contains "airfoil" use it, otherwise default to "naca4412"
+                )
+
+                self._e_llt_dy = torch.as_tensor(comp_e["dy"], dtype=torch.float32, device=self.device)
+                self._e_llt_y = torch.as_tensor(comp_e["y_mid"], dtype=torch.float32, device=self.device)
+                self._e_llt_c = torch.as_tensor(comp_e["c_mid"], dtype=torch.float32, device=self.device)
+                self._e_llt_tw = torch.as_tensor(comp_e["tw_mid"], dtype=torch.float32, device=self.device)
+                self._e_llt_S = torch.as_tensor(comp_e["S"], dtype=torch.float32, device=self.device)
+                self._e_llt_cbar = torch.as_tensor(comp_e["cbar"], dtype=torch.float32, device=self.device)
+                self._e_llt_x_c4 = torch.as_tensor(comp_e["x_c4_mid"], dtype=torch.float32, device=self.device)
+                self._e_llt_xref = torch.as_tensor(comp_e["x_ref"], dtype=torch.float32, device=self.device)
+                self._e_llt_span = torch.as_tensor(comp_e["span"], dtype=torch.float32, device=self.device)
+                self._e_llt_D_nf = torch.as_tensor(comp_e["D_nf"], dtype=torch.float32, device=self.device)
+                self._e_llt_D_tr = torch.as_tensor(comp_e["D_tr"], dtype=torch.float32, device=self.device)
+                self._e_llt_mirror_of = torch.as_tensor(comp_e["mirror_of"], dtype=torch.long, device=self.device)
+
+                # Fixed elevator airfoil -> fixed Kulfan params
+                elev_airfoil_name = elev.get("airfoil", "naca0012")
+                elev_k = asb.Airfoil(elev_airfoil_name).to_kulfan_airfoil()
+                self._e_kulfan_upper = torch.as_tensor(elev_k.upper_weights, dtype=torch.float32, device=self.device)
+                self._e_kulfan_lower = torch.as_tensor(elev_k.lower_weights, dtype=torch.float32, device=self.device)
+                self._e_kulfan_LE = torch.as_tensor(float(getattr(elev_k, "leading_edge_weight", 0.0)), dtype=torch.float32, device=self.device)
+                self._e_kulfan_TE = torch.as_tensor(float(getattr(elev_k, "TE_thickness", 0.0)), dtype=torch.float32, device=self.device)
 
     @override
     def _eval_3d_llt(self, upper, lower, LE, TE, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
@@ -136,6 +172,22 @@ class NeuralFoilSampling(Block):
         )
         return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2]}
 
+    def _eval_3d_llt_elevator_fixed(self, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
+        """3D elevator LLT evaluation using fixed (cached) Kulfan parameters."""
+        V = Re_ref * (self._llt_mu / (self._llt_rho * self._e_llt_cbar))
+
+        C = _LLTImplicitFn.apply(
+            alpha_deg.reshape(-1), V.reshape(-1),
+            self._e_kulfan_upper, self._e_kulfan_lower,
+            self._e_kulfan_LE.reshape(-1), self._e_kulfan_TE.reshape(-1),
+            self._e_llt_dy, self._e_llt_y, self._e_llt_c, self._e_llt_tw, self._e_llt_S, self._e_llt_cbar,
+            self._e_llt_x_c4, self._e_llt_xref, self._e_llt_span,
+            self._e_llt_D_nf, self._e_llt_D_tr, self._e_llt_mirror_of,
+            self._llt_rho, self._llt_mu,
+            self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_enforce_sym_t,
+            self._llt_model_size_id, self._llt_device_id,
+        )
+        return {"CL_e": C[:, 0], "CD_e": C[:, 1], "CM_e": C[:, 2]}
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -168,6 +220,16 @@ class NeuralFoilSampling(Block):
                 model_size=self.config.neuralFoilSampling.neuralFoil_size,
             ).get("analysis_confidence", torch.ones_like(self.alpha_batch))
             self._last_aero_coeff["analysis_confidence"] = conf2d
+
+            # Fixed-elevator 3D coefficients: compute once and cache (no gradient needed).
+            if hasattr(self, "_e_llt_cbar") and (not self._elevator_cached):
+                with torch.no_grad():
+                    self._elevator_aero_cached = self._eval_3d_llt_elevator_fixed(
+                        self.alpha_batch, self.Re_batch
+                    )
+                    # detach so it is safe to reuse
+                    self._elevator_aero_cached = {k: v.detach() for k, v in self._elevator_aero_cached.items()}
+                self._elevator_cached = True
 
         else:
             self._last_aero_coeff = get_aero_from_kulfan_parameters_cuda(
@@ -237,6 +299,8 @@ class NeuralFoilSampling(Block):
             "CL": self._last_aero_coeff["CL"].detach(),
             "CD": self._last_aero_coeff["CD"].detach(),
             "CM": self._last_aero_coeff["CM"].detach(),
+            # Optional fixed-elevator outputs (present only when 3D is enabled and elevator geometry exists)
+            **(self._elevator_aero_cached if (self.use_3d_llt and self._elevator_cached and self._elevator_aero_cached is not None) else {}),
             "augmented_lagrangian": aug_lagrangian,
             # Validation data
             "val_alpha": self.alpha_val,

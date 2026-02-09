@@ -41,6 +41,17 @@ class ReducedModel(Block):
         coeffs_CD = self._ridge_solve(CD)
         coeffs_CM = self._ridge_solve(CM)
 
+        # Optional fixed-elevator surrogate (computed once in NeuralFoilSampling in 3D mode)
+        if "CL_e" in downstream_info and "CD_e" in downstream_info and "CM_e" in downstream_info:
+            CL_e = downstream_info["CL_e"].reshape(-1, 1)
+            CD_e = downstream_info["CD_e"].reshape(-1, 1)
+            CM_e = downstream_info["CM_e"].reshape(-1, 1)
+            coeffs_CL_e = self._ridge_solve(CL_e)
+            coeffs_CD_e = self._ridge_solve(CD_e)
+            coeffs_CM_e = self._ridge_solve(CM_e)
+        else:
+            coeffs_CL_e = coeffs_CD_e = coeffs_CM_e = None
+
         if "val_alpha" in downstream_info:
             self._validate_model(downstream_info, coeffs_CL, coeffs_CD, coeffs_CM, nfConfig)
 
@@ -49,6 +60,11 @@ class ReducedModel(Block):
             "phi_CL": coeffs_CL,
             "phi_CD": coeffs_CD,
             "phi_CM": coeffs_CM,
+            **({
+                "phi_CL_e": coeffs_CL_e,
+                "phi_CD_e": coeffs_CD_e,
+                "phi_CM_e": coeffs_CM_e,
+            } if coeffs_CL_e is not None else {}), #Return elevator phi_*_e only if they exist, otherwise don’t include those keys at all.
             "augmented_lagrangian": aug,
             "iteration": downstream_info["iteration"]
         }
@@ -58,6 +74,12 @@ class ReducedModel(Block):
         dphi_dy = self._normal_lhs
         dJ_dphi = upstream_grads["dJ_dphi"]
         
+        # Only the wing airfoil is optimized. If the OCP provides additional
+        # blocks (e.g. elevator), ignore them here so gradients match the wing
+        # samples (CL, CD, CM) only.
+        if dJ_dphi.shape[0] > 3:
+            dJ_dphi = dJ_dphi[:3, :]
+
         if dphi_dy.isnan().any():
             self.logger.critical(f"⚠️ NaN detected in ReducedModel backward dphi_dy")
         

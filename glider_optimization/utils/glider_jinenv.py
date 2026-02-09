@@ -71,7 +71,20 @@ class GliderPerching :
         phi_CD = SX.sym("phi_CD", (chebyshev_deg+1)**2, 1)
         phi_CM = SX.sym("phi_CM", (chebyshev_deg+1)**2, 1)
                 
-        parameter = [phi_CL, phi_CD, phi_CM]
+        #parameter = [phi_CL, phi_CD, phi_CM]
+
+        nfConfig = self.config.neuralFoilSampling
+
+        # In 3D mode we optionally add a separate (fixed) elevator surrogate.
+        if getattr(nfConfig, "use_3d_llt", False):
+            phi_CL_e = SX.sym("phi_CL_e", (chebyshev_deg+1)**2, 1)
+            phi_CD_e = SX.sym("phi_CD_e", (chebyshev_deg+1)**2, 1)
+            phi_CM_e = SX.sym("phi_CM_e", (chebyshev_deg+1)**2, 1)
+            parameter = [phi_CL, phi_CD, phi_CM, phi_CL_e, phi_CD_e, phi_CM_e]
+        else:
+            phi_CL_e = phi_CD_e = phi_CM_e = None
+            parameter = [phi_CL, phi_CD, phi_CM]
+
         self.dyn_auxvar = vcat(parameter)
 
         m_w = 0.6 * m * S_w / (S_w + S_e)
@@ -100,6 +113,21 @@ class GliderPerching :
 
         com_w = l_w_m + self.mc_to_wcom(l_w_m)
         com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption) - aligned with the fuselage               
+        
+        # 3D override: use chordwise centroids saved in aero_rom 3d_blocks.pt
+        if getattr(nfConfig, "use_3d_llt", False):
+            try:
+                import torch
+                ckpt = torch.load(getattr(nfConfig, "llt_ckpt_path", ""), map_location="cpu")
+                cent = ckpt.get("centroid", {}) if isinstance(ckpt, dict) else {}
+                if "wing_x" in cent:
+                    com_w = float(cent["wing_x"])
+                if "elevator_x" in cent:
+                    com_e = float(cent["elevator_x"])
+            except Exception:
+                # If anything goes wrong, fall back to baseline behavior.
+                pass
+        
         com_f = l_f
         com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
 
@@ -114,7 +142,7 @@ class GliderPerching :
         alpha_w = theta - atan2(z_wdot, x_wdot)
         Re = rho * v_w * chord / mu_air
         
-        nfConfig = self.config.neuralFoilSampling
+        #nfConfig = self.config.neuralFoilSampling
         
         a0_min = nfConfig.AoA_min*pi/180
         a0_max = nfConfig.AoA_max*pi/180
@@ -141,10 +169,34 @@ class GliderPerching :
 
         alpha_e = theta + phi - atan2(z_edot, x_edot)
         v_e = sqrt(x_edot * x_edot + z_edot * z_edot + 1e-8)   # flow/air speed
-        F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)    # lift force vector (proportional to)
-        F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)   # drag force vector (proportional to)
+
+        Re_e = rho * v_e * chord / mu_air
+
+        # Elevator coefficients: default analytic model; in 3D mode, use the
+        # fixed-elevator Chebyshev surrogate inside the same envelope.
+        if phi_CL_e is not None:
+            w_e = self.smooth_gate(alpha_e, a0_min, a0_max, sharpness)
+            alpha_e_scaled = self.scale(alpha_e, a0_min, a0_max)
+            Re_e_scaled = self.scale(Re_e, nfConfig.Re_min, nfConfig.Re_max)
+            alpha_e_scaled_clamped = fmax(-1.0, fmin(1.0, alpha_e_scaled))
+            Re_e_scaled_clamped = fmax(-1.0, fmin(1.0, Re_e_scaled))
+            X_e = self.cheb_basis_2d(alpha_e_scaled_clamped, Re_e_scaled_clamped, chebyshev_deg)
+
+            CL_e = w_e * dot(X_e, phi_CL_e) + (1 - w_e) * self.C_L(alpha_e)
+            CD_e = w_e * dot(X_e, phi_CD_e) + (1 - w_e) * self.C_D(alpha_e)
+            CM_e = w_e * dot(X_e, phi_CM_e) + (1 - w_e) * self.C_M(alpha_e)
+        else:
+            CL_e = self.C_L(alpha_e)
+            CD_e = self.C_D(alpha_e)
+            CM_e = self.C_M(alpha_e)
+
+        #F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)    # lift force vector (proportional to)
+        F_Le = CL_e * vertcat(-z_edot, x_edot)
+        #F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)   # drag force vector (proportional to)
+        F_De = CD_e * vertcat(-x_edot, -z_edot)
         F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
-        M_e = 0.5 * rho * v_e**2 * S_e * chord * self.C_M(alpha_e)
+        #M_e = 0.5 * rho * v_e**2 * S_e * chord * self.C_M(alpha_e)
+        M_e = 0.5 * rho * v_e**2 * S_e * chord * CM_e
 
         # compute torques with respect to fixed reference point induced by forces
 

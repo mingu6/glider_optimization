@@ -49,7 +49,20 @@ class OCP(Block):
         weights_CD = downstream_info["phi_CD"].view(-1, 1).detach().cpu().numpy()
         weights_CM = downstream_info["phi_CM"].view(-1, 1).detach().cpu().numpy()
 
-        auxvar_vector = np.vstack([weights_CL, weights_CD, weights_CM])
+        # Wing always present
+        aux_blocks = [weights_CL, weights_CD, weights_CM]
+
+        # Optional elevator coefficients (in 3D mode with fixed-elevator LLT)
+        if "phi_CL_e" in downstream_info and "phi_CD_e" in downstream_info and "phi_CM_e" in downstream_info:
+            aux_blocks += [
+                downstream_info["phi_CL_e"].view(-1, 1).detach().cpu().numpy(),
+                downstream_info["phi_CD_e"].view(-1, 1).detach().cpu().numpy(),
+                downstream_info["phi_CM_e"].view(-1, 1).detach().cpu().numpy(),
+            ]
+
+        auxvar_vector = np.vstack(aux_blocks)
+
+        #auxvar_vector = np.vstack([weights_CL, weights_CD, weights_CM])
         self.last_traj_COC = self.coc.ocSolver(horizon=111, init_state=self.init_state, auxvar_value=auxvar_vector, timeVarying=True, warm_start=True)
 
         if not self.last_traj_COC["success"]:
@@ -78,8 +91,14 @@ class OCP(Block):
         
         dJ_dphi_np = deps_dphi.T @ dJ_deps
         dJ_dphi = torch.from_numpy(dJ_dphi_np).float().to(self.device)
-        dJ_dphi = dJ_dphi.view(3, -1)
+        #dJ_dphi = dJ_dphi.view(3, -1)
 
+        # Number of Chebyshev coefficients per surrogate block - Before only wing CL, CD, CM, now possibly also elevator CL_e, CD_e, CM_e
+        cheb_deg = self.config.reducedModel.chebyshev_degree
+        n_feat = (cheb_deg + 1) ** 2
+        n_blocks = int(dJ_dphi.numel() // n_feat)
+        dJ_dphi = dJ_dphi.view(n_blocks, -1)
+        
         return {"dJ_dphi": dJ_dphi}
                 
     def plot(self, iteration):

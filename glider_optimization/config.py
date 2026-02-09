@@ -1,7 +1,7 @@
 from pathlib import Path
 import yaml
 from typing import Any, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import numpy as np
 
 class RunConfig(BaseModel):
@@ -41,7 +41,7 @@ class NeuralFoilSamplingConfig(BaseModel):
     n_samples: int = 100
     min_confidence: float = 0.7
     min_avg_Cl_Cd: float = 2.0
-    rho: float = 10.0
+    sigma: float = 10.0
 
     # Optional: upgrade 2D sampling to 3D LLT
     use_3d_llt: bool = False
@@ -86,6 +86,12 @@ class OCPConfig(BaseModel):
     initial_state: list[float] = Field(
         default_factory= lambda : [-8.5, 0 , 0. , 0., 6., 3. , 0., 0.01]
     )
+
+    # Backward-compatibility: allow other YAML schemas (e.g. n_initial_conditions,
+    # init_state_ranges, etc.) without breaking config parsing.
+    # If the YAML has additional keys under ocp: that are not explicitly declared in OCPConfig,Pydantic will not error; it will accept them.
+
+    model_config = {"extra": "allow"} 
     
 class IOConfig(BaseModel):
     gif_fps: int = 1
@@ -95,14 +101,53 @@ class IOConfig(BaseModel):
     run_name: str = "run"
     debug: bool = False
     wandb: WandbConfig = Field(default_factory=WandbConfig)
-    
+
+class FlowConfig(BaseModel):
+    rho: float = 1.225
+    mu: float = 1.789e-5
+
+class SurfaceGeometryConfig(BaseModel):
+    y_half: list[float]
+    c_half: list[float]
+    xle_half: list[float]
+    twist_half: list[float]
+    x_ref: float = 0.0
+    z_ref: float = 0.0
+    airfoil: str | None = None            # keep placeholder
+    use_quarter_chord_ref: bool = True
+
+class DynConfig(BaseModel):
+    mass: float = 0.065
+    S_w: float = 0.158
+    S_e: float = 0.017
+    l_w_i: float = -0.005
+    l_w_f: float = -0.015
+    l: float = 0.26
+    l_e: float = 0.02
+
+class PlaneConfig(BaseModel):
+    flow: FlowConfig
+    wing: SurfaceGeometryConfig
+    elevator: SurfaceGeometryConfig | None = None     # keep placeholder
+    dyn: DynConfig
+
 class Config(BaseModel):
     run: RunConfig
     airfoil: AirfoilConfig = Field(default_factory=AirfoilConfig) 
     neuralFoilSampling: NeuralFoilSamplingConfig = Field(default_factory=NeuralFoilSamplingConfig)
     reducedModel: ReducedModelConfig = Field(default_factory=ReducedModelConfig)
+    plane: PlaneConfig | None = None
     io: IOConfig
     ocp: OCPConfig 
+    @model_validator(mode="after")
+    def plane_only_for_3d(self):
+        if self.neuralFoilSampling.use_3d_llt:
+            if self.plane is None:
+                raise ValueError("plane: must be provided when use_3d_llt: true")
+        else:
+            # keep old behavior as default baseline
+            self.plane = None
+        return self
     
 def load_config(path: Path) -> Config:
     with path.open("r") as f:

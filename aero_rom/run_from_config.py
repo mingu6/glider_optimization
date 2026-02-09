@@ -6,22 +6,21 @@
 #   - builds differentiable 3D LLT blocks and saves them
 #
 # Usage:
-#   python run_from_config.py data/config.json [--export_surfaces] [--no-export_ckpt]
+#   python aero_rom/run_from_config.py conf/test.yaml [--export_surfaces] [--no-export_ckpt]
 #
 # Examples:
-#   python run_from_config.py data/config.json                    # checkpoint only (default)
-#   python run_from_config.py data/config.json --export_surfaces  # checkpoint + CSVs
-#   python run_from_config.py data/config.json --no-export_ckpt   # CSVs only (no checkpoint)
+#   python aero_rom/run_from_config.py conf/test.yaml                    # checkpoint only (default)
+#   python aero_rom/run_from_config.py conf/test.yaml --export_surfaces  # checkpoint + CSVs
+#   python aero_rom/run_from_config.py conf/test.yaml --no-export_ckpt   # CSVs only (no checkpoint)
 
 import argparse
 from src.diff_pipeline import run_pipeline as run_diff_pipeline
-
 
 def main():
     ap = argparse.ArgumentParser(
         description="Run LLT + cuNeuralFoil to generate CSV surfaces and 3D differentiable blocks."
     )
-    ap.add_argument("config", help="Path to JSON config")
+    ap.add_argument("config", help="Path to config (.json or .yaml/.yml)")
     ap.add_argument(
         "--export_surfaces",
         action="store_true",
