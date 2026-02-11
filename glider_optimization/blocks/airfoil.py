@@ -34,7 +34,7 @@ class Airfoil(Block):
         )
         
         self._iter = 0
-        self.scheduler = self._create_scheduler(af_conf)
+        self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=0.99)
         self.frames = []
 
     @override
@@ -57,7 +57,7 @@ class Airfoil(Block):
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
         self._apply_gradients(upstream_grads)
         self.optimizer.step()
-        self._step_scheduler(upstream_grads)
+        self._step_scheduler()
         self._enforce_constraints()
         
         if self._iter == self.config.run.max_outer_iters - 1 and not self.config.io.wandb.enabled:
@@ -86,44 +86,14 @@ class Airfoil(Block):
             [self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param],
             lr=self.config.airfoil.lr
         )
+        self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=0.99)
+
 
     def get_lr(self) -> float:
         try:
             return float(self.optimizer.param_groups[0]["lr"])
         except Exception:
             return float(getattr(self.config.airfoil, "lr", 0.0))
-
-    def _create_scheduler(self, af_conf):
-        sched_conf = getattr(af_conf, "lr_schedule", None)
-        if sched_conf is None:
-            return None
-
-        def _get(c, k, default):
-            if c is None:
-                return default
-            if isinstance(c, dict):
-                return c.get(k, default)
-            return getattr(c, k, default)
-
-        typ = _get(sched_conf, "type", "exponential")
-        
-        if typ == "exponential":
-            gamma = _get(sched_conf, "gamma", 0.99)
-            return lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
-        elif typ == "step":
-            step_size = _get(sched_conf, "step_size", 100)
-            gamma = _get(sched_conf, "gamma", 0.1)
-            return lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
-        elif typ == "cosine":
-            T_max = _get(sched_conf, "T_max", 100)
-            return lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=T_max)
-        elif typ == "reduce_on_plateau":
-            mode = _get(sched_conf, "mode", "min")
-            factor = _get(sched_conf, "factor", 0.1)
-            patience = _get(sched_conf, "patience", 10)
-            return lr_scheduler.ReduceLROnPlateau(self.optimizer, mode=mode, factor=factor, patience=patience, verbose=True)
-        
-        return None
 
     def _log_params_to_wandb(self):
         metrics = {"airfoil/learning_rate": self.get_lr()}
@@ -145,21 +115,12 @@ class Airfoil(Block):
         self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
         self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]
 
-    def _step_scheduler(self, upstream_grads):
+    def _step_scheduler(self):
         if self.scheduler is None:
             return
 
         try:
-            if isinstance(self.scheduler, lr_scheduler.ReduceLROnPlateau):
-                metric = None
-                if isinstance(upstream_grads, dict):
-                    metric = upstream_grads.get("outer_loss", upstream_grads.get("loss", None))
-                if metric is not None:
-                    self.scheduler.step(metric)
-                else:
-                    warnings.warn("ReduceLROnPlateau scheduler configured but no metric found in upstream_grads; skipping step.")
-            else:
-                self.scheduler.step()
+            self.scheduler.step()
         except Exception:
             warnings.warn("LR scheduler step failed; continuing without scheduling.")
 

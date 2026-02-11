@@ -204,7 +204,7 @@ class NeuralFoilSampling(Block):
                 "lagrangian/lambda_conf": lambda_val,
                 "lagrangian/lambda_clcd": lambda_clcd_val
             }
-            wandb.log(metrics)
+            wandb.log(metrics, step=downstream_info["iteration"])
 
         # Validation forward pass
         B_val = self.alpha_val.shape[0]
@@ -321,6 +321,6 @@ class NeuralFoilSampling(Block):
         }
         
     def resume(self, checkpoint):
-        self.lambda_conf = torch.tensor(checkpoint["lagrangian/lambda_conf"], device=self.device, requires_grad=False)
-        self.lambda_clcd = torch.tensor(checkpoint["lagrangian/lambda_clcd"], device=self.device, requires_grad=False)
+        self.lambda_conf = torch.tensor(checkpoint["lagrangian/lambda_conf"], device=self.device, dtype=torch.float32, requires_grad=False)
+        self.lambda_clcd = torch.tensor(checkpoint["lagrangian/lambda_clcd"], device=self.device, dtype=torch.float32, requires_grad=False)
 

@@ -90,7 +90,7 @@ class Runner:
         for _, b in self.blocks.items():
             b.resume(checkpoint_params)
         
-        self.start_iteration = self.config.io.wandb.checkpoint_iteration
+        self.start_iteration = self.config.io.wandb.checkpoint_iteration + 1
 
     def run(self):
         self.logger.info("Runner started")
@@ -99,7 +99,7 @@ class Runner:
         for iteration in range(self.start_iteration, num_iterations):
             if iteration % self.config.io.log_every == 0:
                 self.logger.info("=" * 100)
-                self.logger.info(f"Iteration {iteration + 1}/{num_iterations}")
+                self.logger.info(f"Iteration {iteration}/{num_iterations}")
             
             self._forward_pass(iteration)
             self._backward_pass(iteration)

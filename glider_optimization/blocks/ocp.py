@@ -234,19 +234,22 @@ class OCP(Block):
         
         fig, ax = plt.subplots(figsize=(10, 8))
         
+        num_trajs = len(self.last_trajs)
+        colors = plt.cm.viridis(np.linspace(0, 1, num_trajs))
+        
         for i, traj in enumerate(self.last_trajs):                
             states = traj['state_traj_opt']
             
-            ax.plot(states[:, 0], states[:, 1], color='blue', alpha=0.3, linewidth=1, zorder=1)
+            ax.plot(states[:, 0], states[:, 1], color=colors[i], alpha=0.7, linewidth=1.5, zorder=1)
             
-            ax.scatter(states[0, 0], states[0, 1], color='green', marker='o', s=50, zorder=2)
+            ax.scatter(states[0, 0], states[0, 1], color=colors[i], marker='o', s=40, zorder=2)
             
         ax.scatter(0, 0, color='red', marker='x', s=100, linewidth=3, zorder=3)
         
         # Create custom legend
         legend_elements = [
-            Line2D([0], [0], color='blue', lw=2, label='Trajectory'),
-            Line2D([0], [0], marker='o', color='w', markerfacecolor='green', markersize=10, label='Start'),
+            Line2D([0], [0], color='gray', lw=2, label='Trajectories'),
+            Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=10, label='Start'),
             Line2D([0], [0], marker='x', color='red', markersize=10, markeredgewidth=2, label='Target')
         ]
         ax.legend(handles=legend_elements, loc='upper right')
