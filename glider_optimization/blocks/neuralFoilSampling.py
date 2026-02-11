@@ -7,6 +7,8 @@ import torch
 from math import sqrt   
 import logging
 import numpy as np
+import wandb
+
 # Optional 3D LLT upgrade (uses aero_rom)
 try:
     from aero_rom.src.llt import LLT_computational_params as _LLT_params
@@ -196,6 +198,13 @@ class NeuralFoilSampling(Block):
         violation_clcd = max(0.0, self.min_avg_Cl_Cd - cl_cd_mean)
         lambda_clcd_val = float(self.lambda_clcd.detach().cpu().item()) if isinstance(self.lambda_clcd, torch.Tensor) else float(self.lambda_clcd)
         aug_lagrangian += lambda_clcd_val * violation_clcd + 0.5 * float(self.rho) * (violation_clcd ** 2)
+        
+        if self.config.io.wandb.enabled:
+            metrics = {
+                "lagrangian/lambda_conf": lambda_val,
+                "lagrangian/lambda_clcd": lambda_clcd_val
+            }
+            wandb.log(metrics)
 
         # Validation forward pass
         B_val = self.alpha_val.shape[0]
@@ -310,3 +319,8 @@ class NeuralFoilSampling(Block):
             "dleading_edge_param": grad[2] + grad_lagrangian[2],
             "dTE_thickness_param": grad[3] + grad_lagrangian[3],
         }
+        
+    def resume(self, checkpoint):
+        self.lambda_conf = torch.tensor(checkpoint["lagrangian/lambda_conf"], device=self.device, requires_grad=False)
+        self.lambda_clcd = torch.tensor(checkpoint["lagrangian/lambda_clcd"], device=self.device, requires_grad=False)
+

@@ -22,7 +22,7 @@ class Airfoil(Block):
     def __init__(self, config: Config):
         self.config = config
         af_conf = self.config.airfoil
-
+        
         self.upper_params = nn.Parameter(torch.tensor(af_conf.upper_initial_weights, dtype=torch.float32))
         self.lower_params = nn.Parameter(torch.tensor(af_conf.lower_initial_weights, dtype=torch.float32))
         self.leading_edge_param = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
@@ -64,6 +64,28 @@ class Airfoil(Block):
             self.save_gif(fps=self.config.io.gif_fps)
         
         return {}
+    
+    def resume(self, checkpoint):
+        upper_weights = []
+        lower_weights = []
+        
+        for i in range(8):
+            upper_key = f"airfoil/upper_params_{i}"
+            lower_key = f"airfoil/lower_params_{i}"
+            upper_weights.append(checkpoint[upper_key])
+            lower_weights.append(checkpoint[lower_key])            
+                    
+        leading_edge_weight = float(checkpoint["airfoil/leading_edge_weight"])
+        TE_thickness = float(checkpoint["airfoil/TE_thickness"])
+        
+        self.upper_params = nn.Parameter(torch.tensor(upper_weights, dtype=torch.float32))
+        self.lower_params = nn.Parameter(torch.tensor(lower_weights, dtype=torch.float32))
+        self.leading_edge_param = nn.Parameter(torch.tensor([leading_edge_weight], dtype=torch.float32))
+        self.TE_thickness_param = nn.Parameter(torch.tensor([TE_thickness], dtype=torch.float32))
+        self.optimizer = torch.optim.Adam(
+            [self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param],
+            lr=self.config.airfoil.lr
+        )
 
     def get_lr(self) -> float:
         try:

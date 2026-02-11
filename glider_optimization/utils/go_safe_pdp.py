@@ -320,6 +320,9 @@ class COCsys:
                    "time": time,
                    "horizon": horizon,
                    "cost": sol['f'].full(),
+                   "w_opt": w_opt,
+                   "lam_g": lam_g,
+                   "lam_x": lam_x,
                    "success": success}
 
         return opt_sol

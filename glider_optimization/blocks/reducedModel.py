@@ -2,9 +2,11 @@ from ..blockBase import Block
 from typing import override
 from ..config import Config
 from typing import Dict, Any
+from pathlib import Path
 import torch
 import logging
-
+import wandb
+import plotly.graph_objects as go
 
 class ReducedModel(Block):
     @override
@@ -43,13 +45,20 @@ class ReducedModel(Block):
 
         if "val_alpha" in downstream_info:
             self._validate_model(downstream_info, coeffs_CL, coeffs_CD, coeffs_CM, nfConfig)
-
-        aug = downstream_info.get("augmented_lagrangian", 0.0)
+        
+        #pred_CL = self._cheb_X @ coeffs_CL
+        #self.plot(CL.cpu(), Re.cpu(), alpha.cpu(), coeffs_CL.cpu(), "CL approximation", "CL", downstream_info["iteration"])
+        #pred_CD = self._cheb_X @ coeffs_CD
+        #self.plot(CD.cpu(), Re.cpu(), alpha.cpu(), coeffs_CD.cpu(), "CD approximation", "CD", downstream_info["iteration"])
+        #pred_CM = self._cheb_X @ coeffs_CM
+        #self.plot(CM.cpu(), Re.cpu(), alpha.cpu(), coeffs_CM.cpu(), "CM approximation", "CM", downstream_info["iteration"])
+        #exit(0)
+        
         return {
             "phi_CL": coeffs_CL,
             "phi_CD": coeffs_CD,
             "phi_CM": coeffs_CM,
-            "augmented_lagrangian": aug,
+            "augmented_lagrangian": downstream_info["augmented_lagrangian"],
             "iteration": downstream_info["iteration"]
         }
 
@@ -132,3 +141,70 @@ class ReducedModel(Block):
             self.logger.critical(f"⚠️ CD validation error too high: {val_errs['CD_mse']:.2e}")
         if val_errs['CM_mse'] > threshold:
             self.logger.critical(f"⚠️ CM validation error too high: {val_errs['CM_mse']:.2e}")
+            
+    def plot(self, y_data, VV, AA, coeffs, title, zlabel, iteration):
+        fig = go.Figure()
+
+        # Scatter plot of Ground Truth data
+        fig.add_trace(go.Scatter3d(
+            x=VV.flatten(),
+            y=AA.flatten(),
+            z=y_data.flatten(),
+            mode='markers',
+            marker=dict(size=3, color='blue', opacity=0.6),
+            name='Ground Truth',
+            hoverinfo='text',
+            text=[f"Re: {v:.2e}, AoA: {a:.2f}, {zlabel}: {z:.4f}" 
+                for v, a, z in zip(VV.flatten(), AA.flatten(), y_data.flatten())]
+        ))
+
+        # Surface plot of Chebyshev Prediction
+        # Create a grid for evaluation
+        n_grid = 50
+        re_range = torch.linspace(float(VV.min()), float(VV.max()), n_grid, device=coeffs.device)
+        aa_range = torch.linspace(float(AA.min()), float(AA.max()), n_grid, device=coeffs.device)
+        
+        RE, AA_GRID = torch.meshgrid(re_range, aa_range, indexing='xy')
+        
+        nfConfig = self.config.neuralFoilSampling
+        RE_flat = RE.reshape(-1)
+        AA_flat = AA_GRID.reshape(-1)
+        
+        # Scale to domain [-1, 1] using the same config constants
+        RE_scaled = self._scale_to_domain(RE_flat, nfConfig.Re_min, nfConfig.Re_max)
+        AA_scaled = self._scale_to_domain(AA_flat, nfConfig.AoA_min, nfConfig.AoA_max)
+        
+        # Compute basis for the grid
+        X_grid = self._chebyshev_basis(AA_scaled, RE_scaled)
+        
+        # Predict Z
+        Z_flat = X_grid @ coeffs
+        Z_grid = Z_flat.reshape(n_grid, n_grid)
+
+        fig.add_trace(go.Surface(
+            x=re_range.cpu().numpy(),
+            y=aa_range.cpu().numpy(),
+            z=Z_grid.detach().cpu().numpy(),
+            colorscale='Viridis',
+            name='Chebyshev Prediction',
+            showscale=True,
+            opacity=0.7
+        ))
+
+        fig.update_layout(
+            title=f"{title} - Iteration {iteration}",
+            scene=dict(
+                xaxis_title='Re',
+                yaxis_title='AoA [deg]',
+                zaxis_title=zlabel,
+            ),
+            width=1000,
+            height=700,
+            showlegend=True
+        )
+
+        out_dir = Path(self.config.io.checkpoint_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        plot_path = out_dir / f"reducedModel_{zlabel}_{iteration}.html"
+        print(f"Saving plot to {plot_path}")
+        fig.write_html(plot_path, include_plotlyjs="cdn")

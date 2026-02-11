@@ -75,16 +75,17 @@ class WandbConfig(BaseModel):
     entity: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     notes: Optional[str] = None
+    
+    checkpoint_run_id: Optional[str] = None
+    checkpoint_iteration: Optional[int] = None
 
 class OCPConfig(BaseModel):
     terminal_state_weight: list[float] = Field(
         default_factory = lambda: [10., 10., 5., 0.01, 5., 5., 2., 0.01]
     )
-    
     stage_control_weight: float = 0.1
-    
-    initial_state: list[float] = Field(
-        default_factory= lambda : [-8.5, 0 , 0. , 0., 6., 3. , 0., 0.01]
+    initial_states: list[list[float]] = Field(
+        default_factory= lambda : [[-8.5, 0 , 0. , 0., 6., 3. , 0., 0.01]]
     )
     
 class IOConfig(BaseModel):
@@ -102,7 +103,7 @@ class Config(BaseModel):
     neuralFoilSampling: NeuralFoilSamplingConfig = Field(default_factory=NeuralFoilSamplingConfig)
     reducedModel: ReducedModelConfig = Field(default_factory=ReducedModelConfig)
     io: IOConfig
-    ocp: OCPConfig 
+    ocp: OCPConfig = Field(default_factory=OCPConfig)
     
 def load_config(path: Path) -> Config:
     with path.open("r") as f:

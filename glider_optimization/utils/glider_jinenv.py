@@ -160,6 +160,12 @@ class GliderPerching :
         xddot = 1. / m * (F_w[0] + F_e[0])
         zddot = 1. / m * (F_w[1] + F_e[1]) - g
         
+        self.debug_f = Function(
+            'debug_f',
+            [self.X, self.U, self.dyn_auxvar],
+            [alpha_w, v_w, CL_w, CD_w, CM_w, F_w, F_e, τ_w, τ_e, xddot, zddot, thetaddot]
+        )
+        
         self.f = vertcat(xdot, zdot, thetadot, phidot, xddot, zddot, thetaddot, 0)
 
     def initCost(self, state_weights, wu=0.001, stage_scale = 0.0001):
@@ -197,8 +203,6 @@ class GliderPerching :
         Args:
             state_traj: State trajectory (N x 8) - [x, z, theta, phi, xdot, zdot, thetadot]
             control_traj: Control trajectory (N x 1) - [phidot]
-            goal: Goal state (8,)
-            state_weights: State weights for error computation (7,)
             save_option: Whether to save animation as GIF
             title: Filename for saved animation
             fps: Frames per second

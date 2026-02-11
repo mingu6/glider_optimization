@@ -6,6 +6,7 @@ import wandb
 from glider_optimization.config import Config
 from glider_optimization.blockBase import Block
 from glider_optimization.blocks import Airfoil, NeuralFoilSampling, ReducedModel, OCP, Evaluation
+from .utils.resume import load_checkpoint_from_wandb
 
 
 class Runner:
@@ -13,7 +14,7 @@ class Runner:
         self.config = config
         self.logger = logging
         self.wandb_enabled = config.io.wandb.enabled
-        
+        self._resume_from_checkpoint = config.io.wandb.checkpoint_run_id is not None and config.io.wandb.checkpoint_iteration is not None
         if self.wandb_enabled:
             self._init_wandb()
         
@@ -25,26 +26,51 @@ class Runner:
             "Evaluation": Evaluation(config)
         }
         
+        self.start_iteration = 0
         self._setup_environment()
+        
+        if self._resume_from_checkpoint:
+            self._resume()
+            print(f"✓ Initialized state from wandb checkpoint: run={config.io.wandb.checkpoint_run_id}, iter={config.io.wandb.checkpoint_iteration}")
 
     def _init_wandb(self):
         cfg = self.config
-        wandb.init(
-            project=cfg.io.wandb.project,
-            entity=cfg.io.wandb.entity,
-            name=cfg.io.run_name,
-            config={
-                "seed": cfg.run.seed,
-                "device": cfg.run.device,
-                "max_outer_iters": cfg.run.max_outer_iters,
-                "airfoil_lr": cfg.airfoil.lr,
-                "neuralfoil_size": cfg.neuralFoilSampling.neuralFoil_size,
-                "n_samples": cfg.neuralFoilSampling.n_samples,
-                "chebyshev_degree": cfg.reducedModel.chebyshev_degree,
-            },
-            tags=cfg.io.wandb.tags,
-            notes=cfg.io.wandb.notes,
-        )
+        if self._resume_from_checkpoint:
+            wandb.init(
+                project=cfg.io.wandb.project,
+                entity=cfg.io.wandb.entity,
+                name=cfg.io.run_name,
+                id=cfg.io.wandb.checkpoint_run_id,
+                resume="allow",
+                config={
+                    "seed": cfg.run.seed,
+                    "device": cfg.run.device,
+                    "max_outer_iters": cfg.run.max_outer_iters,
+                    "airfoil_lr": cfg.airfoil.lr,
+                    "neuralfoil_size": cfg.neuralFoilSampling.neuralFoil_size,
+                    "n_samples": cfg.neuralFoilSampling.n_samples,
+                    "chebyshev_degree": cfg.reducedModel.chebyshev_degree,
+                },
+                tags=cfg.io.wandb.tags,
+                notes=cfg.io.wandb.notes,
+            )
+        else:
+            wandb.init(
+                project=cfg.io.wandb.project,
+                entity=cfg.io.wandb.entity,
+                name=cfg.io.run_name,
+                config={
+                    "seed": cfg.run.seed,
+                    "device": cfg.run.device,
+                    "max_outer_iters": cfg.run.max_outer_iters,
+                    "airfoil_lr": cfg.airfoil.lr,
+                    "neuralfoil_size": cfg.neuralFoilSampling.neuralFoil_size,
+                    "n_samples": cfg.neuralFoilSampling.n_samples,
+                    "chebyshev_degree": cfg.reducedModel.chebyshev_degree,
+                },
+                tags=cfg.io.wandb.tags,
+                notes=cfg.io.wandb.notes,
+            )
         self.logger.info(f"W&B initialized: project={cfg.io.wandb.project}, run={cfg.io.run_name}")
 
     def _setup_environment(self):
@@ -52,12 +78,25 @@ class Runner:
         np.random.seed(seed)
         random.seed(seed)
         self.logger.info(f"Environment initialized with seed {seed}")
+        
+    def _resume(self):
+        checkpoint_params = load_checkpoint_from_wandb(
+            run_id=self.config.io.wandb.checkpoint_run_id,
+            iteration=self.config.io.wandb.checkpoint_iteration,
+            project=self.config.io.wandb.project,
+            entity=self.config.io.wandb.entity
+        )
+        
+        for _, b in self.blocks.items():
+            b.resume(checkpoint_params)
+        
+        self.start_iteration = self.config.io.wandb.checkpoint_iteration
 
     def run(self):
         self.logger.info("Runner started")
         num_iterations = self.config.run.max_outer_iters
 
-        for iteration in range(num_iterations):
+        for iteration in range(self.start_iteration, num_iterations):
             if iteration % self.config.io.log_every == 0:
                 self.logger.info("=" * 100)
                 self.logger.info(f"Iteration {iteration + 1}/{num_iterations}")

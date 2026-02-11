@@ -20,8 +20,11 @@ class Evaluation(Block):
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         self.last_traj = downstream_info["trajectory"]
-        cost_val = float(self.last_traj["cost"][0][0])
-        aug = downstream_info.get("augmented_lagrangian", 0.0)
+        
+        cost_vals = [float(t["cost"][0][0]) for t in self.last_traj]
+        cost_val = sum(cost_vals) / len(cost_vals)
+            
+        aug = downstream_info["augmented_lagrangian"]
         total_obj = cost_val + float(aug)
         
         iteration = downstream_info["iteration"]
@@ -38,10 +41,12 @@ class Evaluation(Block):
     
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
         w = self.config.ocp.terminal_state_weight
-        eps_terminal = self.last_traj['state_traj_opt'][-1]
-        dJ_deps = 2 * (w * eps_terminal)
         
-        return {"dJ_deps": dJ_deps}
+        dJ_deps_list = []
+        for traj in self.last_traj:
+            eps_terminal = traj['state_traj_opt'][-1]
+            dJ_deps_list.append(2 * (w * eps_terminal))
+        return {"dJ_deps": dJ_deps_list}
 
     def _log_to_wandb(self, total_obj, cost_val, aug, iteration):
         metrics = {
