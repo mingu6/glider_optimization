@@ -4,7 +4,8 @@ from pathlib import Path
 import numpy as np
 import os
 import json
-import src.geometry as geom
+#import src.geometry as geom
+from . import geometry as geom
 import aerosandbox as asb
 import pandas as pd
 import torch

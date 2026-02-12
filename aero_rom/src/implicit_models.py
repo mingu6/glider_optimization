@@ -15,7 +15,8 @@ from __future__ import annotations
 from typing import Iterable, List
 import torch
 
-from src.implicit_llt import CuNFWeissingerLLTImplicit
+#from src.implicit_llt import CuNFWeissingerLLTImplicit
+from .implicit_llt import CuNFWeissingerLLTImplicit
 
 
 class _Base3DCoeffImplicit:

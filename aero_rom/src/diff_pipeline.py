@@ -13,10 +13,14 @@ from typing import Dict, Any
 
 import numpy as np
 
-from src.config import load_config
-from src.io_utils import save_surface_csv
-from src.llt import run_llt_cuNF_grid
-from src.llt import LLT_computational_params as compute_llt_params
+# from src.config import load_config
+# from src.io_utils import save_surface_csv
+# from src.llt import run_llt_cuNF_grid
+# from src.llt import LLT_computational_params as compute_llt_params
+from .config import load_config
+from .io_utils import save_surface_csv
+from .llt import run_llt_cuNF_grid
+from .llt import LLT_computational_params as compute_llt_params
 from cuneuralfoil.cu_kulfan_airfoil import cuKulfanAirfoil
 import torch
 
@@ -50,7 +54,8 @@ def _normalized_airfoil_x_centroid(airfoil_name: str) -> float:
     """Chordwise centroid x in normalized chord coordinates (0..1)."""
     # Import here to keep aero_rom optional where possible.
     import aerosandbox as asb
-    from src.geometry import normalize_airfoil_name
+    #from src.geometry import normalize_airfoil_name
+    from .geometry import normalize_airfoil_name
 
     af = asb.Airfoil(normalize_airfoil_name(airfoil_name))
     # AeroSandbox: TE->upper->LE->lower->TE, already in chord fraction.
@@ -63,8 +68,8 @@ def _normalized_airfoil_x_centroid(airfoil_name: str) -> float:
 
 def _spanwise_centroid_x(y_half, c_half, xle_half, airfoil_name: str) -> float:
     """Approximate 3D chordwise centroid x using volume proxy integration."""
-    from src.geometry import mirror_full
-
+    #from src.geometry import mirror_full
+    from .geometry import mirror_full
     y, c, xle, _ = mirror_full(
         np.asarray(y_half, float),
         np.asarray(c_half, float),

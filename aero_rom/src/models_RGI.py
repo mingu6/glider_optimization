@@ -3,7 +3,8 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 import numpy as np
-from src.interpolation import RGISurface
+#from src.interpolation import RGISurface
+from .interpolation import RGISurface
 
 @dataclass
 class _BaseCoeff:

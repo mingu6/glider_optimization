@@ -89,7 +89,6 @@ class NeuralFoilSampling(Block):
             self._llt_S = torch.as_tensor(comp["S"], dtype=torch.float32, device=self.device)
             self._llt_cbar = torch.as_tensor(comp["cbar"], dtype=torch.float32, device=self.device)
             self._llt_x_c4 = torch.as_tensor(comp["x_c4_mid"], dtype=torch.float32, device=self.device)
-            self._llt_xref = torch.as_tensor(comp["x_ref"], dtype=torch.float32, device=self.device)
             self._llt_span = torch.as_tensor(comp["span"], dtype=torch.float32, device=self.device)
             self._llt_D_nf = torch.as_tensor(comp["D_nf"], dtype=torch.float32, device=self.device)
             self._llt_D_tr = torch.as_tensor(comp["D_tr"], dtype=torch.float32, device=self.device)
@@ -140,7 +139,6 @@ class NeuralFoilSampling(Block):
                 self._e_llt_S = torch.as_tensor(comp_e["S"], dtype=torch.float32, device=self.device)
                 self._e_llt_cbar = torch.as_tensor(comp_e["cbar"], dtype=torch.float32, device=self.device)
                 self._e_llt_x_c4 = torch.as_tensor(comp_e["x_c4_mid"], dtype=torch.float32, device=self.device)
-                self._e_llt_xref = torch.as_tensor(comp_e["x_ref"], dtype=torch.float32, device=self.device)
                 self._e_llt_span = torch.as_tensor(comp_e["span"], dtype=torch.float32, device=self.device)
                 self._e_llt_D_nf = torch.as_tensor(comp_e["D_nf"], dtype=torch.float32, device=self.device)
                 self._e_llt_D_tr = torch.as_tensor(comp_e["D_tr"], dtype=torch.float32, device=self.device)
@@ -166,7 +164,7 @@ class NeuralFoilSampling(Block):
             alpha_deg.reshape(-1), V.reshape(-1),
             upper, lower, LE.reshape(-1), TE.reshape(-1),
             self._llt_dy, self._llt_y, self._llt_c, self._llt_tw, self._llt_S, self._llt_cbar,
-            self._llt_x_c4, self._llt_xref, self._llt_span,
+            self._llt_x_c4, self._llt_span,
             self._llt_D_nf, self._llt_D_tr, self._llt_mirror_of,
             self._llt_rho, self._llt_mu,
             self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_enforce_sym_t,
@@ -183,7 +181,7 @@ class NeuralFoilSampling(Block):
             self._e_kulfan_upper, self._e_kulfan_lower,
             self._e_kulfan_LE.reshape(-1), self._e_kulfan_TE.reshape(-1),
             self._e_llt_dy, self._e_llt_y, self._e_llt_c, self._e_llt_tw, self._e_llt_S, self._e_llt_cbar,
-            self._e_llt_x_c4, self._e_llt_xref, self._e_llt_span,
+            self._e_llt_x_c4, self._e_llt_span,
             self._e_llt_D_nf, self._e_llt_D_tr, self._e_llt_mirror_of,
             self._llt_rho, self._llt_mu,
             self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_enforce_sym_t,

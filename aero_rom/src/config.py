@@ -116,7 +116,8 @@ def _yaml_to_aerorom_dict(cfg: dict) -> dict:
         }
 
     # Compute vel_range from Re_range + cbar (matches your LLT convention)
-    from src.llt import LLT_computational_params
+    #from src.llt import LLT_computational_params
+    from .llt import LLT_computational_params
     comp = LLT_computational_params(
         out["wing_geometry"]["y_half"],
         out["wing_geometry"]["c_half"],

@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from typing import Iterable, List
 import torch
-from src.diff_llt import CuNFWeissingerLLT
+#from src.diff_llt import CuNFWeissingerLLT
+from . diff_llt import CuNFWeissingerLLT
 
 
 class _Base3DCoeff:

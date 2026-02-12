@@ -2,11 +2,16 @@
 
 import numpy as np
 from pathlib import Path
-from src.config import load_config
-from src.io_utils import save_surface_csv
-from src.interpolation import RGISurface
-from src.llt import run_llt_cuNF_grid, run_llt
-from src.llt import LLT_computational_params as compute_llt_params
+# from src.config import load_config
+# from src.io_utils import save_surface_csv
+# from src.interpolation import RGISurface
+# from src.llt import run_llt_cuNF_grid, run_llt
+# from src.llt import LLT_computational_params as compute_llt_params
+from .config import load_config
+from .io_utils import save_surface_csv
+from .interpolation import RGISurface
+from .llt import run_llt_cuNF_grid, run_llt
+from .llt import LLT_computational_params as compute_llt_params
 from cuneuralfoil.cu_kulfan_airfoil import cuKulfanAirfoil
 
 

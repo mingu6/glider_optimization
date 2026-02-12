@@ -11,12 +11,18 @@ from typing import Dict, Any
 
 import torch
 
-from src.config import load_config
-from src.llt import LLT_computational_params as compute_llt_params
-from src.diff_llt import CuNFWeissingerLLT
-from src.models import ClModel, CdModel, CmModel
-from src.implicit_llt import CuNFWeissingerLLTImplicit
-from src.implicit_models import ClModelImplicit, CdModelImplicit, CmModelImplicit
+# from src.config import load_config
+# from src.llt import LLT_computational_params as compute_llt_params
+# from src.diff_llt import CuNFWeissingerLLT
+# from src.models import ClModel, CdModel, CmModel
+# from src.implicit_llt import CuNFWeissingerLLTImplicit
+# from src.implicit_models import ClModelImplicit, CdModelImplicit, CmModelImplicit
+from .config import load_config
+from .llt import LLT_computational_params as compute_llt_params
+from .diff_llt import CuNFWeissingerLLT
+from .models import ClModel, CdModel, CmModel
+from .implicit_llt import CuNFWeissingerLLTImplicit
+from .implicit_models import ClModelImplicit, CdModelImplicit, CmModelImplicit
 from cuneuralfoil.cu_kulfan_airfoil import cuKulfanAirfoil
 
 
