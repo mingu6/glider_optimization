@@ -23,15 +23,82 @@ class Airfoil(Block):
         self.config = config
         af_conf = self.config.airfoil
 
-        self.upper_params = nn.Parameter(torch.tensor(af_conf.upper_initial_weights, dtype=torch.float32))
-        self.lower_params = nn.Parameter(torch.tensor(af_conf.lower_initial_weights, dtype=torch.float32))
-        self.leading_edge_param = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
-        self.TE_thickness_param = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
+        # Optional: optimize both root and tip airfoils (used only by 3D LLT branch).
+        # 3D-only spanwise wing airfoil root/tip optimization is driven by plane.wing.airfoil_root/airfoil_tip
+        use_3d = bool(getattr(self.config, "neuralFoilSampling", None) and self.config.neuralFoilSampling.use_3d_llt)
+        wing_cfg = getattr(getattr(self.config, "plane", None), "wing", None)
 
-        self.optimizer = torch.optim.Adam(
-            [self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param],
-            lr=af_conf.lr
-        )
+        wing_has_tip = bool(wing_cfg is not None and getattr(wing_cfg, "airfoil_tip", None))
+        self.spanwise_enabled = bool(use_3d and wing_has_tip)
+
+        # self.upper_params = nn.Parameter(torch.tensor(af_conf.upper_initial_weights, dtype=torch.float32))
+        # self.lower_params = nn.Parameter(torch.tensor(af_conf.lower_initial_weights, dtype=torch.float32))
+        # self.leading_edge_param = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
+        # self.TE_thickness_param = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
+
+        # ROOT initialization:
+        # - 2D: from top-level YAML Kulfan weights (unchanged default behavior)
+        # - 3D: seed from plane.wing.airfoil_root (fallback to plane.wing.airfoil)
+        root_upper_init = np.array(af_conf.upper_initial_weights, dtype=float)
+        root_lower_init = np.array(af_conf.lower_initial_weights, dtype=float)
+        root_le_init = float(af_conf.leading_edge_weight)
+        root_te_init = float(af_conf.TE_thickness)
+
+        if use_3d and wing_cfg is not None:
+            root_name_raw = getattr(wing_cfg, "airfoil_root", None) or getattr(wing_cfg, "airfoil", None)
+            if root_name_raw is not None:
+                root_name = str(root_name_raw).lower().replace("_", "").replace(" ", "")
+                k_root = asb.Airfoil(root_name).to_kulfan_airfoil()
+
+                root_upper_init = np.array(k_root.upper_weights, dtype=float)
+                root_lower_init = np.array(k_root.lower_weights, dtype=float)
+                root_le_init = float(k_root.leading_edge_weight)
+                root_te_init = float(k_root.TE_thickness)
+
+                if root_upper_init.shape[0] != 8 or root_lower_init.shape[0] != 8:
+                    raise ValueError(
+                        f"Expected 8 Kulfan weights from wing root airfoil '{root_name_raw}', "
+                        f"got upper={root_upper_init.shape}, lower={root_lower_init.shape}"
+                    )
+
+        self.upper_params = nn.Parameter(torch.tensor(root_upper_init, dtype=torch.float32))
+        self.lower_params = nn.Parameter(torch.tensor(root_lower_init, dtype=torch.float32))
+        self.leading_edge_param = nn.Parameter(torch.tensor([root_le_init], dtype=torch.float32))
+        self.TE_thickness_param = nn.Parameter(torch.tensor([root_te_init], dtype=torch.float32))
+
+        params_for_optim = [self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param]
+
+        # Tip parameters (only created/optimized when spanwise is enabled)
+        if self.spanwise_enabled:
+            # Tip initialization comes from plane.wing.airfoil_tip (3D-only feature)
+            tip_name_raw = getattr(wing_cfg, "airfoil_tip", None)
+            tip_name = str(tip_name_raw).lower().replace("_", "").replace(" ", "")
+            k_tip = asb.Airfoil(tip_name).to_kulfan_airfoil()
+
+            tip_upper_init = np.array(k_tip.upper_weights, dtype=float)
+            tip_lower_init = np.array(k_tip.lower_weights, dtype=float)
+            tip_le_init = float(k_tip.leading_edge_weight)
+            tip_te_init = float(k_tip.TE_thickness)
+
+            if tip_upper_init.shape[0] != 8 or tip_lower_init.shape[0] != 8:
+                raise ValueError(
+                    f"Expected 8 Kulfan weights from wing tip airfoil '{tip_name_raw}', "
+                    f"got upper={tip_upper_init.shape}, lower={tip_lower_init.shape}"
+                )
+
+            self.upper_params_tip = nn.Parameter(torch.tensor(tip_upper_init, dtype=torch.float32))
+            self.lower_params_tip = nn.Parameter(torch.tensor(tip_lower_init, dtype=torch.float32))
+            self.leading_edge_param_tip = nn.Parameter(torch.tensor([tip_le_init], dtype=torch.float32))
+            self.TE_thickness_param_tip = nn.Parameter(torch.tensor([tip_te_init], dtype=torch.float32))
+
+            params_for_optim += [self.upper_params_tip, self.lower_params_tip, self.leading_edge_param_tip, self.TE_thickness_param_tip]
+
+        self.optimizer = torch.optim.Adam(params_for_optim, lr=af_conf.lr)
+
+        # self.optimizer = torch.optim.Adam(
+        #     [self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param],
+        #     lr=af_conf.lr
+        # )
         
         self._iter = 0
         self.scheduler = self._create_scheduler(af_conf)
@@ -46,13 +113,32 @@ class Airfoil(Block):
             if self.config.io.wandb.enabled:
                 self._log_params_to_wandb()
         
-        return {
+        # return {
+        #     "upper_weights": self.upper_params,
+        #     "lower_weights": self.lower_params,
+        #     "leading_edge_weight": self.leading_edge_param,
+        #     "TE_thickness": self.TE_thickness_param,
+        #     "iteration": downstream_info["iteration"]
+        # }
+
+        out = {
             "upper_weights": self.upper_params,
             "lower_weights": self.lower_params,
             "leading_edge_weight": self.leading_edge_param,
             "TE_thickness": self.TE_thickness_param,
-            "iteration": downstream_info["iteration"]
+            "iteration": downstream_info["iteration"],
         }
+
+        # Optional tip outputs (3D LLT only)
+        if self.spanwise_enabled:
+            out.update({
+                "upper_weights_tip": self.upper_params_tip,
+                "lower_weights_tip": self.lower_params_tip,
+                "leading_edge_weight_tip": self.leading_edge_param_tip,
+                "TE_thickness_tip": self.TE_thickness_param_tip,
+            })
+
+        return out
 
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
         self._apply_gradients(upstream_grads)
@@ -114,6 +200,15 @@ class Airfoil(Block):
         metrics["airfoil/leading_edge_weight"] = float(self.leading_edge_param.detach().numpy()[0])
         metrics["airfoil/TE_thickness"] = float(self.TE_thickness_param.detach().numpy()[0])
         
+        if getattr(self, "spanwise_enabled", False):
+            for i, val in enumerate(self.upper_params_tip.detach().numpy()):
+                metrics[f"airfoil_tip/upper_params_{i}"] = float(val)
+            for i, val in enumerate(self.lower_params_tip.detach().numpy()):
+                metrics[f"airfoil_tip/lower_params_{i}"] = float(val)
+
+            metrics["airfoil_tip/leading_edge_weight"] = float(self.leading_edge_param_tip.detach().numpy()[0])
+            metrics["airfoil_tip/TE_thickness"] = float(self.TE_thickness_param_tip.detach().numpy()[0])
+
         wandb.log(metrics, step=self._iter)
 
     def _apply_gradients(self, upstream_grads):

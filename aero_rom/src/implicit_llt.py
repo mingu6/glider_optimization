@@ -107,10 +107,49 @@ def _eval_nf_batched(
     BN = alpha_flat.numel()
 
     # expand (no data copy; gradients accumulate correctly)
-    upper_batch = upper.unsqueeze(0).expand(BN, -1)
-    lower_batch = lower.unsqueeze(0).expand(BN, -1)
-    LE_batch = LE.expand(BN)
-    TE_batch = TE.expand(BN)
+    # Expand parameters to (BN, ...) for a single cuNeuralFoil call.
+    # Supports either:
+    #   - global airfoil: upper/lower (8,), LE/TE scalar or (1,)
+    #   - per-panel airfoil: upper/lower (n_pan, 8), LE/TE (n_pan,) or scalar
+    if upper.ndim == 1:
+        # global airfoil -> broadcast to all panels
+        upper_batch = upper.unsqueeze(0).expand(BN, -1)
+        lower_batch = lower.unsqueeze(0).expand(BN, -1)
+
+        LE0 = LE.reshape(-1)[0]
+        TE0 = TE.reshape(-1)[0]
+        LE_batch = LE0.expand(BN)
+        TE_batch = TE0.expand(BN)
+
+    elif upper.ndim == 2:
+        if upper.shape[0] != n_pan or lower.shape[0] != n_pan:
+            raise ValueError(
+                f"Per-panel Kulfan must have shape (n_pan, 8); got upper {tuple(upper.shape)}, "
+                f"lower {tuple(lower.shape)} with n_pan={n_pan}"
+            )
+
+        # (n_pan, 8) -> (B, n_pan, 8) -> (BN, 8)
+        upper_batch = upper.unsqueeze(0).expand(B, -1, -1).reshape(BN, -1)
+        lower_batch = lower.unsqueeze(0).expand(B, -1, -1).reshape(BN, -1)
+
+        def _to_pan(v):
+            v = v.reshape(-1)
+            if v.numel() == 1:
+                return v[0].expand(n_pan)
+            if v.numel() == n_pan:
+                return v
+            raise ValueError(
+                f"Per-panel LE/TE must be scalar or (n_pan,), got {tuple(v.shape)} with n_pan={n_pan}"
+            )
+
+        LE_pan = _to_pan(LE)
+        TE_pan = _to_pan(TE)
+
+        LE_batch = LE_pan.unsqueeze(0).expand(B, -1).reshape(BN)
+        TE_batch = TE_pan.unsqueeze(0).expand(B, -1).reshape(BN)
+
+    else:
+        raise ValueError(f"Unsupported upper.ndim={upper.ndim}; expected 1 (global) or 2 (per-panel)")
 
     kulfan_batch = {
         "upper_weights_cuda": upper_batch,

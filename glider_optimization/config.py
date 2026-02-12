@@ -8,7 +8,30 @@ class RunConfig(BaseModel):
     seed: int = 0
     device: str = "cpu"
     max_outer_iters: int = 50
-    
+
+class SpanwiseAirfoilConfig(BaseModel):
+    """
+    Optional root->tip airfoil interpolation (used by 3D LLT only).
+    Tip fields default to root values if omitted (handled in Airfoil block too).
+    """
+    enabled: bool = False
+    tip_upper_initial_weights: Optional[np.ndarray] = None
+    tip_lower_initial_weights: Optional[np.ndarray] = None
+    tip_leading_edge_weight: Optional[float] = None
+    tip_TE_thickness: Optional[float] = None
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @field_validator("tip_upper_initial_weights", "tip_lower_initial_weights", mode="before")
+    @classmethod
+    def validate_tip_arrays(cls, v: Any) -> Optional[np.ndarray]:
+        if v is None:
+            return None
+        arr = np.array(v, dtype=float)
+        if arr.shape[0] != 8:
+            raise ValueError(f"{arr} must have exactly 8 elements")
+        return arr
+
 class AirfoilConfig(BaseModel):
     lr: float = 1e-2
     upper_initial_weights: np.ndarray = Field(
@@ -21,6 +44,7 @@ class AirfoilConfig(BaseModel):
     TE_thickness: float = 0.0
     N1: float = 0.5
     N2: float = 1.0
+    spanwise: SpanwiseAirfoilConfig = Field(default_factory=SpanwiseAirfoilConfig)
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -31,6 +55,28 @@ class AirfoilConfig(BaseModel):
         if arr.shape[0] != 8:
             raise ValueError(f"{arr} must have exactly 8 elements")
         return arr
+    
+    @model_validator(mode="after")
+    def fill_spanwise_defaults(self):
+        sp = getattr(self, "spanwise", None)
+        if sp is None or not sp.enabled:
+            return self
+
+        if sp.tip_upper_initial_weights is None:
+            sp.tip_upper_initial_weights = np.array(self.upper_initial_weights, dtype=float)
+        if sp.tip_lower_initial_weights is None:
+            sp.tip_lower_initial_weights = np.array(self.lower_initial_weights, dtype=float)
+        if sp.tip_leading_edge_weight is None:
+            sp.tip_leading_edge_weight = float(self.leading_edge_weight)
+        if sp.tip_TE_thickness is None:
+            sp.tip_TE_thickness = float(self.TE_thickness)
+
+        # Make sure types are right
+        sp.tip_upper_initial_weights = np.array(sp.tip_upper_initial_weights, dtype=float)
+        sp.tip_lower_initial_weights = np.array(sp.tip_lower_initial_weights, dtype=float)
+
+        self.spanwise = sp
+        return self
 
 class NeuralFoilSamplingConfig(BaseModel):
     neuralFoil_size: str = "xxxlarge"
@@ -113,7 +159,14 @@ class SurfaceGeometryConfig(BaseModel):
     twist_half: list[float]
     x_ref: float = 0.0
     z_ref: float = 0.0
-    airfoil: str | None = None            # keep placeholder
+
+    # Backward compatible single airfoil name
+    airfoil: str | None = None
+
+    # 3D-only spanwise wing airfoil names (optional)
+    airfoil_root: str | None = None
+    airfoil_tip: str | None = None
+
     use_quarter_chord_ref: bool = True
 
 class DynConfig(BaseModel):

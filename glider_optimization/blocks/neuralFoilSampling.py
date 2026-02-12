@@ -93,7 +93,9 @@ class NeuralFoilSampling(Block):
             self._llt_D_nf = torch.as_tensor(comp["D_nf"], dtype=torch.float32, device=self.device)
             self._llt_D_tr = torch.as_tensor(comp["D_tr"], dtype=torch.float32, device=self.device)
             self._llt_mirror_of = torch.as_tensor(comp["mirror_of"], dtype=torch.long, device=self.device)
-
+            # Spanwise interpolation factor (root=0 -> tip=1) for optional root/tip airfoils
+            self._llt_eta = (self._llt_y.abs() / self._llt_y.abs().max().clamp_min(1e-9))
+            
             rho_air = float(flow.get("rho", 1.2041))
             if "mu" in flow:
                 mu_air = float(flow["mu"])
@@ -145,7 +147,14 @@ class NeuralFoilSampling(Block):
                 self._e_llt_mirror_of = torch.as_tensor(comp_e["mirror_of"], dtype=torch.long, device=self.device)
 
                 # Fixed elevator airfoil -> fixed Kulfan params
-                elev_airfoil_name_raw = elev.get("airfoil", "naca0012")
+                # Prefer YAML plane.elevator.airfoil over checkpoint metadata
+                plane_elev = getattr(getattr(self.config, "plane", None), "elevator", None)
+
+                if plane_elev is not None and getattr(plane_elev, "airfoil", None) is not None:
+                    elev_airfoil_name_raw = getattr(plane_elev, "airfoil")
+                else:
+                    elev_airfoil_name_raw = elev.get("airfoil", "naca0012")
+
                 elev_airfoil_name = elev_airfoil_name_raw.lower().replace("_", "").replace(" ", "")
                 elev_k = asb.Airfoil(elev_airfoil_name).to_kulfan_airfoil()
                 self._e_kulfan_upper = torch.as_tensor(elev_k.upper_weights, dtype=torch.float32, device=self.device)
@@ -153,12 +162,54 @@ class NeuralFoilSampling(Block):
                 self._e_kulfan_LE = torch.as_tensor(float(getattr(elev_k, "leading_edge_weight", 0.0)), dtype=torch.float32, device=self.device)
                 self._e_kulfan_TE = torch.as_tensor(float(getattr(elev_k, "TE_thickness", 0.0)), dtype=torch.float32, device=self.device)
 
+    #@override
+    # def _eval_3d_llt(self, upper, lower, LE, TE, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
+    #     """
+    #     Minimal 3D wrapper: LLTImplicitFn expects (alpha, V).
+    #     We map Re_ref -> V via V = Re_ref * mu / (rho * cbar).
+    #     """
+    #     V = Re_ref * (self._llt_mu / (self._llt_rho * self._llt_cbar))
+
+    #     C = _LLTImplicitFn.apply(
+    #         alpha_deg.reshape(-1), V.reshape(-1),
+    #         upper, lower, LE.reshape(-1), TE.reshape(-1),
+    #         self._llt_dy, self._llt_y, self._llt_c, self._llt_tw, self._llt_S, self._llt_cbar,
+    #         self._llt_x_c4, self._llt_span,
+    #         self._llt_D_nf, self._llt_D_tr, self._llt_mirror_of,
+    #         self._llt_rho, self._llt_mu,
+    #         self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_enforce_sym_t,
+    #         self._llt_model_size_id, self._llt_device_id,
+    #     )
+    #     return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2]}
+
     @override
-    def _eval_3d_llt(self, upper, lower, LE, TE, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
+    def _eval_3d_llt(
+        self,
+        upper,
+        lower,
+        LE,
+        TE,
+        alpha_deg: torch.Tensor,
+        Re_ref: torch.Tensor,
+        *,
+        upper_tip=None,
+        lower_tip=None,
+        LE_tip=None,
+        TE_tip=None,
+    ):
         """
         Minimal 3D wrapper: LLTImplicitFn expects (alpha, V).
         We map Re_ref -> V via V = Re_ref * mu / (rho * cbar).
         """
+        # Spanwise interpolate Kulfan parameters if tip values are provided.
+        # Root-only (legacy) remains the default.
+        if upper_tip is not None:
+            eta = self._llt_eta  # (n_pan,)
+            upper = (1.0 - eta)[:, None] * upper[None, :] + eta[:, None] * upper_tip[None, :]
+            lower = (1.0 - eta)[:, None] * lower[None, :] + eta[:, None] * lower_tip[None, :]
+            LE = (1.0 - eta) * LE.reshape(-1)[0] + eta * LE_tip.reshape(-1)[0]
+            TE = (1.0 - eta) * TE.reshape(-1)[0] + eta * TE_tip.reshape(-1)[0]
+
         V = Re_ref * (self._llt_mu / (self._llt_rho * self._llt_cbar))
 
         C = _LLTImplicitFn.apply(
@@ -172,6 +223,7 @@ class NeuralFoilSampling(Block):
             self._llt_model_size_id, self._llt_device_id,
         )
         return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2]}
+
 
     def _eval_3d_llt_elevator_fixed(self, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
         """3D elevator LLT evaluation using fixed (cached) Kulfan parameters."""
@@ -204,14 +256,33 @@ class NeuralFoilSampling(Block):
         }
         if self.use_3d_llt:
             # 3D LLT coefficients (differentiable)
-            self._last_aero_coeff = self._eval_3d_llt(
-                downstream_info["upper_weights"],
-                downstream_info["lower_weights"],
-                downstream_info["leading_edge_weight"],
-                downstream_info["TE_thickness"],
-                self.alpha_batch,
-                self.Re_batch,
-            )
+            if (
+                "upper_weights_tip" in downstream_info
+                and "lower_weights_tip" in downstream_info
+                and "leading_edge_weight_tip" in downstream_info
+                and "TE_thickness_tip" in downstream_info
+            ):
+                self._last_aero_coeff = self._eval_3d_llt(
+                    downstream_info["upper_weights"],
+                    downstream_info["lower_weights"],
+                    downstream_info["leading_edge_weight"],
+                    downstream_info["TE_thickness"],
+                    self.alpha_batch,
+                    self.Re_batch,
+                    upper_tip=downstream_info["upper_weights_tip"],
+                    lower_tip=downstream_info["lower_weights_tip"],
+                    LE_tip=downstream_info["leading_edge_weight_tip"],
+                    TE_tip=downstream_info["TE_thickness_tip"],
+                )
+            else:
+                self._last_aero_coeff = self._eval_3d_llt(
+                    downstream_info["upper_weights"],
+                    downstream_info["lower_weights"],
+                    downstream_info["leading_edge_weight"],
+                    downstream_info["TE_thickness"],
+                    self.alpha_batch,
+                    self.Re_batch,
+                )
 
             conf2d = get_aero_from_kulfan_parameters_cuda(
                 kulfan_batch,
