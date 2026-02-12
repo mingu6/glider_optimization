@@ -38,7 +38,7 @@ def run_pipeline(config_path: str):
     # Wing
     computation_params_wing= compute_llt_params(cfg["wing_geometry"]["y_half"], cfg["wing_geometry"]["c_half"], 
                                                 cfg["wing_geometry"]["xle_half"], cfg["wing_geometry"]["twist_half"], 
-                                                cfg["wing_geometry"]["airfoil"])
+                                                cfg["wing_geometry"]["airfoil"],cfg["wing_geometry"].get("dihedral", 0.0))
     
     airfoil_wing = cuKulfanAirfoil(
                 computation_params_wing['airfoil_CST'],
@@ -69,7 +69,7 @@ def run_pipeline(config_path: str):
     # Elevator
     computation_params_elevator= compute_llt_params(cfg["elevator_geometry"]["y_half"], cfg["elevator_geometry"]["c_half"], 
                                                    cfg["elevator_geometry"]["xle_half"], cfg["elevator_geometry"]["twist_half"], 
-                                                   cfg["elevator_geometry"]["airfoil"])
+                                                   cfg["elevator_geometry"]["airfoil"],cfg["elevator_geometry"].get("dihedral", 0.0))
     
     airfoil_elevator = cuKulfanAirfoil(
                 computation_params_elevator['airfoil_CST'],

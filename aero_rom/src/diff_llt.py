@@ -89,7 +89,6 @@ class CuNFWeissingerLLT(torch.nn.Module):
         self.S = torch.as_tensor(computation_params["S"], dtype=torch.float32, device=self.device)
         self.cbar = torch.as_tensor(computation_params["cbar"], dtype=torch.float32, device=self.device)
         self.x_c4 = torch.as_tensor(computation_params["x_c4_mid"], dtype=torch.float32, device=self.device)
-        self.xref = torch.as_tensor(computation_params["x_ref"], dtype=torch.float32, device=self.device)
         self.span = torch.as_tensor(computation_params["span"], dtype=torch.float32, device=self.device)
 
         self.D_nf = torch.as_tensor(computation_params["D_nf"], dtype=torch.float32, device=self.device)
@@ -285,11 +284,9 @@ class CuNFWeissingerLLT(torch.nn.Module):
         CDi = Di / denom_S
         CD = CDp + CDi
 
-        # Pitching moment about ref c/4
+        # Pitching moment about the quarter-chord line (NeuralFoil CM is about c/4)
         Mprime_c4 = q_inf * (c ** 2) * cm
-        dx = x_c4 - self.xref  # (1, n_pan)
-        MxF_y = -(dx * Lp)     # moment from lift via x-offset
-        M_pitch = torch.sum((Mprime_c4 + MxF_y) * dy, dim=-1)
+        M_pitch = torch.sum(Mprime_c4 * dy, dim=-1)
         denom_pitch = q_inf.squeeze(-1) * self.S * self.cbar
         CM_total = M_pitch / torch.maximum(denom_pitch, torch.tensor(1e-30, device=self.device))
 

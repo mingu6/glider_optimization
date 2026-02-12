@@ -92,7 +92,8 @@ def _yaml_to_aerorom_dict(cfg: dict) -> dict:
             "c_half": wing["c_half"],
             "xle_half": wing["xle_half"],
             "twist_half": wing["twist_half"],
-            "airfoil": wing.get("airfoil", "naca0012"),
+            "airfoil": wing.get("airfoil", "naca4412"),
+            "dihedral": float(wing.get("dihedral", 0.0)),
         },
 
         # LLT solver settings (with good defaults)
@@ -111,6 +112,7 @@ def _yaml_to_aerorom_dict(cfg: dict) -> dict:
             "xle_half": elev["xle_half"],
             "twist_half": elev["twist_half"],
             "airfoil": elev.get("airfoil", wing.get("airfoil", "naca0012")),
+            "dihedral": float(elev.get("dihedral", wing.get("dihedral", 0.0))),
         }
 
     # Compute vel_range from Re_range + cbar (matches your LLT convention)

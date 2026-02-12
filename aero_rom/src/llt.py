@@ -50,7 +50,7 @@ def v_trailing(P, A, B, A_w, B_w, gamma=1.0, rc=0.01):
     return (v_segment_core(P, B,   B_w, gamma, rc) +
             v_segment_core(P, A_w, A,   gamma, rc))
 
-def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name):
+def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name,dihedral_deg: float = 0.0):
     
     #airfoil_CST=asb.Airfoil(geom.normalize_airfoil_name(airfoil_name)).to_kulfan_airfoil()
     y_half    = np.array(y_half, dtype=float)
@@ -58,6 +58,12 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
     xle_half  = np.array(xle_half, dtype=float)
     twist_half= np.array(twist_half, dtype=float)
     y, c, xle, twist = geom.mirror_full(y_half, c_half, xle_half, twist_half)
+    
+    # Dihedral: vertical offset of geometry only (Model A).
+    # Use abs(y) to get symmetric dihedral left/right.
+    dihedral_rad = np.deg2rad(dihedral_deg)
+    z_st = np.tan(dihedral_rad) * np.abs(y)   # station z-coordinates, same length as y
+
     
     # --- Airfoil handling: database → custom CST → auto-generate ---
     normalized_name = geom.normalize_airfoil_name(airfoil_name)
@@ -143,6 +149,7 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
     twA, twB = twist[:-1], twist[1:]
 
     y_mid = 0.5*(yA + yB)
+    z_mid = np.tan(dihedral_rad) * np.abs(y_mid)
     c_mid = 0.5*(cA + cB)
     xle_mid = 0.5*(xleA + xleB)
     tw_mid = 0.5*(twA + twB)
@@ -152,8 +159,10 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
     x_cp = xle_mid + ctrl_point_location*c_mid
 
     # Control points at 0.75 c, slightly below the surface
-    CPts = np.column_stack([x_cp, y_mid, -0.01 * c_mid])
+    # CPts = np.column_stack([x_cp, y_mid, -0.01 * c_mid])
 
+    # Control points: at dihedral-shifted z, with a small downward offset for robustness
+    CPts = np.column_stack([x_cp, y_mid, z_mid - 0.01 * c_mid])
     dy = np.abs(yB - yA)
     S = np.sum(0.5*(cA + cB) * dy)
 
@@ -161,12 +170,6 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
     x_c4A = xleA + 0.25*cA
     x_c4B = xleB + 0.25*cB
     x_c4_mid = 0.5*(x_c4A + x_c4B)
-
-    # Reference point: quarter-chord at y = 0 on the symmetry axis
-
-    x_ref=0.019
-    #x_ref=0.032 # from flow5
-    z_ref = -0.002  # your geometry uses z=0 for the quarter-chord line
 
     # Mean aerodynamic chord (length) for coefficient normalization
     cbar = np.sum(0.5*(cA**2 + cB**2) * dy) / S
@@ -176,10 +179,17 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
     Build downwash influence matrices for LLT.
     vortex_location, ctrl_point_location: fraction of local chord (0=LE, 1=TE)
     """
-    A_q  = np.column_stack([x_qA, yA, np.zeros_like(yA)])
-    B_q  = np.column_stack([x_qB, yB, np.zeros_like(yB)])
+    # A_q  = np.column_stack([x_qA, yA, np.zeros_like(yA)])
+    # B_q  = np.column_stack([x_qB, yB, np.zeros_like(yB)])
 
-    # Wake from the back edge (0.75 c)
+    # Bound vortex endpoints (horseshoes) in 3D with dihedral z(y)
+    zA = z_st[:-1]   # station z at yA
+    zB = z_st[1:]    # station z at yB
+
+    A_q = np.column_stack([x_qA, yA, zA])   # shape (n_pan, 3)
+    B_q = np.column_stack([x_qB, yB, zB])   # shape (n_pan, 3)
+
+    # Wake endpoints: extend downstream in +x, keep y and z
     Lwake = 20.0 * max(c_mid.max(), 1.0)
     A_wq = A_q + np.array([Lwake, 0.0, 0.0])
     B_wq = B_q + np.array([Lwake, 0.0, 0.0])
@@ -207,9 +217,27 @@ def LLT_computational_params(y_half, c_half, xle_half, twist_half, airfoil_name)
         j = np.argmin(np.abs(y_mid + y_mid[i]))  # y_j ~ -y_i
         mirror_of[i] = j
 
-    computation_params={'D_nf':D_nf,'D_tr':D_tr,'mirror_of':mirror_of, 'c_mid':c_mid, 'y_mid':y_mid,
-                      'cbar':cbar,'x_c4_mid':x_c4_mid, 'x_ref':x_ref, 'z_ref':z_ref, 'dy':dy, 'S':S,
-                       'n_pan':n_pan, 'tw_mid':tw_mid, 'span': max(y_half)*2.0, 'airfoil_CST':airfoil_asb}
+    # computation_params={'D_nf':D_nf,'D_tr':D_tr,'mirror_of':mirror_of, 'c_mid':c_mid, 'y_mid':y_mid,
+    #                   'cbar':cbar,'x_c4_mid':x_c4_mid, 'x_ref':x_ref, 'z_ref':z_ref, 'dy':dy, 'S':S,
+    #                    'n_pan':n_pan, 'tw_mid':tw_mid, 'span': max(y_half)*2.0, 'airfoil_CST':airfoil_asb}
+
+    computation_params = {
+        "D_nf": D_nf,
+        "D_tr": D_tr,
+        "mirror_of": mirror_of,
+        "c_mid": c_mid,
+        "y_mid": y_mid,
+        "cbar": cbar,
+        "x_c4_mid": x_c4_mid,
+        "dy": dy,
+        "S": S,
+        "n_pan": n_pan,
+        "tw_mid": tw_mid,
+        "span": max(y_half) * 2.0,
+        "airfoil_CST": airfoil_asb,
+        "dihedral_deg": float(dihedral_deg),
+        "dihedral_rad": float(dihedral_rad),
+    }
 
     return computation_params
 
@@ -225,8 +253,6 @@ def run_llt(airfoil_CST, aoa_range, vel_range, airflow, computation_params,
     tw   = computation_params['tw_mid']      # (n_pan,)
     S    = computation_params['S']           # scalar
     cbar = computation_params['cbar']        # scalar
-    x_c4 = computation_params['x_c4_mid']    # (n_pan,)
-    xref = computation_params['x_ref']       # (n_pan,) or scalar
     span = computation_params['span']        # scalar
 
     # Influence matrices
@@ -296,11 +322,17 @@ def run_llt(airfoil_CST, aoa_range, vel_range, airflow, computation_params,
             CDi = Di / denom_S
             CD  = CDp + CDi
 
-            # pitching moment about y (nose-up positive): section Cm@c/4 + r×F to ref c/4
+            # -------- Post-processing side force --------
+            dihedral_rad = computation_params.get("dihedral_rad", 0.0)
+
+            # per-unit-span side force: sign(y) makes left/right cancel for symmetric cases
+            Fy_prime = np.sign(y) * Lp * np.tan(dihedral_rad)   # (n_pan,)
+            Fy = np.sum(Fy_prime * dy)                          # scalar
+            CY = Fy / denom_S                                   # coefficient
+            
+            # pitching moment about y (nose-up positive)
             Mprime_c4 = q_inf * (c**2) * cm
-            dx = x_c4 - xref
-            MxF_y = -(dx * Lp)
-            M_pitch = np.sum((Mprime_c4 + MxF_y) * dy)
+            M_pitch = np.sum(Mprime_c4 * dy)
 
             denom_cbar = q_inf * np.maximum(S * cbar, 1e-30)
             CM_pitch = M_pitch / denom_cbar
@@ -313,12 +345,21 @@ def run_llt(airfoil_CST, aoa_range, vel_range, airflow, computation_params,
             CMx = M_roll / denom_span
             CMz = M_yaw  / denom_span
 
+            # rows.append({
+            #         "V_inf": vel, "AoA": aoa_deg,
+            #         "CL": CL, "CD": CD, "CDi": CDi, "CDp": CDp, 
+            #         "M_pitch": M_pitch, "M_roll": M_roll, "M_yaw": M_yaw,
+            #         "CM_pitch":CM_pitch,"CM_roll": CMx, "CM_yaw": CMz  
+            #     })
+
             rows.append({
                     "V_inf": vel, "AoA": aoa_deg,
-                    "CL": CL, "CD": CD, "CDi": CDi, "CDp": CDp, 
+                    "CL": CL, "CD": CD, "CDi": CDi, "CDp": CDp,
+                    "Fy": Fy, "CY": CY,
                     "M_pitch": M_pitch, "M_roll": M_roll, "M_yaw": M_yaw,
-                    "CM_pitch":CM_pitch,"CM_roll": CMx, "CM_yaw": CMz  
+                    "CM_pitch": CM_pitch, "CM_roll": CMx, "CM_yaw": CMz
                 })
+
     res_df = pd.DataFrame(rows)
     return res_df
 
@@ -458,7 +499,6 @@ def run_llt_cuNF_grid(airfoil_cu,
     S    = computation_params["S"]          # scalar
     cbar = computation_params["cbar"]       # scalar
     x_c4 = computation_params["x_c4_mid"]   # (n_pan,)
-    xref = computation_params["x_ref"]      # scalar
     span = computation_params["span"]       # scalar
 
     D_nf     = computation_params["D_nf"]       # (n_pan, n_pan)
@@ -577,11 +617,16 @@ def run_llt_cuNF_grid(airfoil_cu,
     CDi = Di / (q_inf_grid * S)
     CD  = CDp + CDi
 
+    # -------- Post-processing side force --------
+    dihedral_rad = computation_params.get("dihedral_rad", 0.0)
+
+    Fy_prime = np.sign(y_pan) * Lp * np.tan(dihedral_rad)     # (N_aoa, N_v, n_pan)
+    Fy = np.sum(Fy_prime * dy_pan, axis=-1)                    # (N_aoa, N_v)
+    CY = Fy / (q_inf_grid * S)
+
     # Pitching moment about ref c/4
     Mprime_c4 = q_inf_3d * (c_pan ** 2) * cm
-    dx = x_c4_pan - xref
-    MxF_y = -(dx * Lp)
-    M_pitch = np.sum((Mprime_c4 + MxF_y) * dy_pan, axis=-1)
+    M_pitch = np.sum(Mprime_c4 * dy_pan, axis=-1)
     CM_total = M_pitch / (q_inf_grid * S * cbar)
 
     # Roll (x) and yaw (z)
@@ -591,11 +636,28 @@ def run_llt_cuNF_grid(airfoil_cu,
     CMx = M_roll / (q_inf_grid * S * span)
     CMz = M_yaw  / (q_inf_grid * S * span)
 
+    # res_df = pd.DataFrame({
+    # "V_inf":   V_inf_grid.ravel(),
+    # "AoA":     aoa_deg_grid.ravel(),
+    # "CL":      CL.ravel(),
+    # "CD":      CD.ravel(),
+    # "CDi":     CDi.ravel(),
+    # "CDp":     CDp.ravel(),
+    # "M_pitch": M_pitch.ravel(),
+    # "M_roll":  M_roll.ravel(),
+    # "M_yaw":   M_yaw.ravel(),
+    # "CM_pitch":      CM_total.ravel(),
+    # "CM_roll":     CMx.ravel(),
+    # "CM_yaw":     CMz.ravel(),
+    # })
+
     res_df = pd.DataFrame({
     "V_inf":   V_inf_grid.ravel(),
     "AoA":     aoa_deg_grid.ravel(),
     "CL":      CL.ravel(),
     "CD":      CD.ravel(),
+    "Fy":      Fy.ravel(),
+    "CY":      CY.ravel(),
     "CDi":     CDi.ravel(),
     "CDp":     CDp.ravel(),
     "M_pitch": M_pitch.ravel(),

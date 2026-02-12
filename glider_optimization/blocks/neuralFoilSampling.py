@@ -78,6 +78,7 @@ class NeuralFoilSampling(Block):
             comp = _LLT_params(
                 wing["y_half"], wing["c_half"], wing["xle_half"], wing["twist_half"],
                 wing.get("airfoil", "naca4412"), # if the dict contains "airfoil" use it, otherwise default to "naca4412"
+                wing.get("dihedral", 0.0),
             )
 
             # Const tensors
@@ -129,6 +130,7 @@ class NeuralFoilSampling(Block):
                 comp_e = _LLT_params(
                     elev["y_half"], elev["c_half"], elev["xle_half"], elev["twist_half"],
                     elev.get("airfoil", "naca0012"), # if the dict contains "airfoil" use it, otherwise default to "naca4412"
+                    elev.get("dihedral", 0.0),
                 )
 
                 self._e_llt_dy = torch.as_tensor(comp_e["dy"], dtype=torch.float32, device=self.device)

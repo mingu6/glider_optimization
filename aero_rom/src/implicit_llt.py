@@ -66,7 +66,6 @@ class LLTConst:
     S: torch.Tensor
     cbar: torch.Tensor
     x_c4: torch.Tensor
-    xref: torch.Tensor
     span: torch.Tensor
     D_nf: torch.Tensor
     D_tr: torch.Tensor
@@ -240,11 +239,9 @@ def _compute_coeffs(
     CL = L / denom
     CD = D / denom
 
-    # Pitch about xref
+    # Pitching moment about the quarter-chord line (NeuralFoil CM is about c/4)
     Mprime_c4 = q * (c ** 2) * cm
-    dx = x_c4 - const.xref
-    MxF_y = -(dx * Lp)
-    M_pitch = torch.sum((Mprime_c4 + MxF_y) * dy, dim=-1)
+    M_pitch = torch.sum(Mprime_c4 * dy, dim=-1)
 
     denom_pitch = (q.squeeze(-1) * const.S * const.cbar).clamp_min(1e-30)
     CM = M_pitch / denom_pitch
@@ -275,7 +272,6 @@ class LLTImplicitFn(torch.autograd.Function):
         S: torch.Tensor,
         cbar: torch.Tensor,
         x_c4: torch.Tensor,
-        xref: torch.Tensor,
         span: torch.Tensor,
         D_nf: torch.Tensor,
         D_tr: torch.Tensor,
@@ -295,7 +291,7 @@ class LLTImplicitFn(torch.autograd.Function):
         ctx.device_id = int(device_id.item())
 
         const = LLTConst(
-            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, xref=xref, span=span,
+            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, span=span,
             D_nf=D_nf, D_tr=D_tr, mirror_of=mirror_of,
             rho=rho, mu=mu,
             n_iter=int(n_iter_t.item()),
@@ -334,7 +330,7 @@ class LLTImplicitFn(torch.autograd.Function):
         ctx.save_for_backward(
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
-            dy, y, c, tw, S, cbar, x_c4, xref, span, D_nf, D_tr, mirror_of, rho, mu,
+            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
             beta_t, tol_t, n_iter_t, enforce_sym_t
         )
         return C  # (B,3)
@@ -357,13 +353,13 @@ class LLTImplicitFn(torch.autograd.Function):
         (
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
-            dy, y, c, tw, S, cbar, x_c4, xref, span, D_nf, D_tr, mirror_of, rho, mu,
+            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
             beta_t, tol_t, n_iter_t, enforce_sym_t
         ) = saved
 
         model_size = _ID_TO_MODEL_SIZE[int(ctx.model_size_id)]
         const = LLTConst(
-            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, xref=xref, span=span,
+            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, span=span,
             D_nf=D_nf, D_tr=D_tr, mirror_of=mirror_of,
             rho=rho, mu=mu,
             n_iter=int(n_iter_t.item()),
@@ -637,7 +633,6 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
         self.S = torch.as_tensor(computation_params["S"], dtype=torch.float32, device=self.device)
         self.cbar = torch.as_tensor(computation_params["cbar"], dtype=torch.float32, device=self.device)
         self.x_c4 = torch.as_tensor(computation_params["x_c4_mid"], dtype=torch.float32, device=self.device)
-        self.xref = torch.as_tensor(computation_params["x_ref"], dtype=torch.float32, device=self.device)
         self.span = torch.as_tensor(computation_params["span"], dtype=torch.float32, device=self.device)
 
         self.D_nf = torch.as_tensor(computation_params["D_nf"], dtype=torch.float32, device=self.device)
@@ -662,7 +657,7 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
         C = LLTImplicitFn.apply(
             alpha, V,
             self.upper, self.lower, self.LE, self.TE,
-            self.dy, self.y, self.c, self.tw, self.S, self.cbar, self.x_c4, self.xref, self.span,
+            self.dy, self.y, self.c, self.tw, self.S, self.cbar, self.x_c4, self.span,
             self.D_nf, self.D_tr, self.mirror_of,
             self.rho, self.mu,
             self.beta_t, self.tol_t, self.n_iter_t, self.enforce_sym_t,
