@@ -283,7 +283,12 @@ class NeuralFoilSampling(Block):
                     self.alpha_batch,
                     self.Re_batch,
                 )
-
+            # ---- hard sanity check to localize NaNs early ----
+            for k in ["CL", "CD", "CM"]:
+                t = self._last_aero_coeff[k]
+                if not torch.isfinite(t).all():
+                    bad = (~torch.isfinite(t)).sum().item()
+                    raise RuntimeError(f"3D LLT produced non-finite {k}: {bad} entries")
             conf2d = get_aero_from_kulfan_parameters_cuda(
                 kulfan_batch,
                 self.alpha_batch,

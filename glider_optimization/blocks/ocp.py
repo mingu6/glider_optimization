@@ -71,7 +71,10 @@ class OCP(Block):
         num_iterations = self.config.run.max_outer_iters
         iteration = downstream_info["iteration"]
         if iteration == 0 or iteration == (num_iterations - 1):
-            self.plot(iteration)
+            try: 
+                self.plot(iteration)
+            except ValueError:
+                pass
 
         return {
             "trajectory": self.last_traj_COC,
