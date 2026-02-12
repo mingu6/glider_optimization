@@ -114,29 +114,69 @@ class GliderPerching :
         com_w = l_w_m + self.mc_to_wcom(l_w_m)
         com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption) - aligned with the fuselage               
         
+        # Defaults: preserve old 2D behavior
+        com_w_x = float(com_w)     # existing scalar
+        com_w_z = 0.0
+        com_e_x = float(com_e)
+        com_e_z = 0.0
         # 3D override: use chordwise centroids saved in aero_rom 3d_blocks.pt
         if getattr(nfConfig, "use_3d_llt", False):
             try:
                 import torch
                 ckpt = torch.load(getattr(nfConfig, "llt_ckpt_path", ""), map_location="cpu")
                 cent = ckpt.get("centroid", {}) if isinstance(ckpt, dict) else {}
+
+                # Wing centroid
                 if "wing_x" in cent:
-                    com_w = float(cent["wing_x"])
+                    com_w_x = float(cent["wing_x"])
+                if "wing_z" in cent:
+                    com_w_z = float(cent["wing_z"])
+
+                # Elevator centroid
                 if "elevator_x" in cent:
-                    com_e = float(cent["elevator_x"])
+                    com_e_x = float(cent["elevator_x"])
+                if "elevator_z" in cent:
+                    com_e_z = float(cent["elevator_z"])
+
             except Exception:
-                # If anything goes wrong, fall back to baseline behavior.
                 pass
+        else:
+            # 2D mode
+            com_e_z = com_w_z
         
         com_f = l_f
         com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
+        if getattr(nfConfig, "use_3d_llt", False):
+            com_a_x = (com_w_x*m_w + com_e_x*m_e + com_f*m_f) / (m_w + m_e + m_f)
+        else:
+            com_a_x = com_a   # keep old behavior
 
         # geometric centroid of aerodynamic surfaces (mean chord for flat plate)
-        x_wdot = xdot + l_w_m * thetadot * sin(theta)
-        z_wdot = zdot - l_w_m * thetadot * cos(theta)
-        x_edot = xdot + l * thetadot * sin(theta) + l_e * (thetadot + phidot) * sin(theta + phi)
-        z_edot = zdot - l * thetadot * cos(theta) - l_e * (thetadot + phidot) * cos(theta + phi)
-        
+        if getattr(nfConfig, "use_3d_llt", False):
+            # body-frame lever arms from reference point to aero centroid
+            r_w_bx = com_w_x
+            r_w_bz = com_w_z
+            r_e_bx = com_e_x
+            r_e_bz = com_e_z
+
+            # rotate to world
+            r_w_x = r_w_bx * cos(theta) - r_w_bz * sin(theta)
+            r_w_z = r_w_bx * sin(theta) + r_w_bz * cos(theta)
+            r_e_x = r_e_bx * cos(theta) - r_e_bz * sin(theta)
+            r_e_z = r_e_bx * sin(theta) + r_e_bz * cos(theta)
+
+            # rigid-body point velocities at those centroids
+            x_wdot = xdot + thetadot * r_w_z
+            z_wdot = zdot - thetadot * r_w_x
+
+            x_edot = xdot + thetadot * r_e_z + l_e * (thetadot + phidot) * sin(theta + phi)
+            z_edot = zdot - thetadot * r_e_x - l_e * (thetadot + phidot) * cos(theta + phi)
+        else:
+            # --- 2D mode: unchanged original code ---
+            x_wdot = xdot + l_w_m * thetadot * sin(theta)
+            z_wdot = zdot - l_w_m * thetadot * cos(theta)
+            x_edot = xdot + l * thetadot * sin(theta) + l_e * (thetadot + phidot) * sin(theta + phi)
+            z_edot = zdot - l * thetadot * cos(theta) - l_e * (thetadot + phidot) * cos(theta + phi)
         v_w = sqrt(x_wdot * x_wdot + z_wdot * z_wdot + 1e-8) # flow/air speed
         
         alpha_w = theta - atan2(z_wdot, x_wdot)
@@ -199,14 +239,33 @@ class GliderPerching :
         M_e = 0.5 * rho * v_e**2 * S_e * chord * CM_e
 
         # compute torques with respect to fixed reference point induced by forces
-
         # moment arms (vector from reference point of state to wing/elevator/fuselage)
-        r_w = [ (- com_w + com_a) * cos(theta), (- com_w + com_a) * sin(theta) ]
-        r_e = [ (- com_e + com_a) * cos(theta), (- com_e + com_a) * sin(theta)]
+        if getattr(nfConfig, "use_3d_llt", False):
+            # --- 3D mode: lever arms from reference point (com_a_x) to aero centroids ---
+            r_w_bx = -com_w_x + com_a_x
+            r_w_bz = -com_w_z              # com_a_z assumed 0 in planar model
+            r_e_bx = -com_e_x + com_a_x
+            r_e_bz = -com_e_z
 
-        τ_w = r_w[1] * F_w[0] - r_w[0] * F_w[1] + M_w
-        τ_e = r_e[1] * F_e[0] - r_e[0] * F_e[1] + M_e
-        thetaddot = -1. / I * (τ_w + τ_e)
+            # rotate lever arms to world
+            r_w_x = r_w_bx * cos(theta) - r_w_bz * sin(theta)
+            r_w_z = r_w_bx * sin(theta) + r_w_bz * cos(theta)
+            r_e_x = r_e_bx * cos(theta) - r_e_bz * sin(theta)
+            r_e_z = r_e_bx * sin(theta) + r_e_bz * cos(theta)
+
+            # torque about y: tau = r_x*F_z - r_z*F_x
+            τ_w = r_w_x * F_w[1] - r_w_z * F_w[0] + M_w
+            τ_e = r_e_x * F_e[1] - r_e_z * F_e[0] + M_e
+            thetaddot = -1. / I * (τ_w + τ_e)
+
+        else:
+            # --- 2D mode: unchanged original code ---
+            r_w = [ (- com_w + com_a) * cos(theta), (- com_w + com_a) * sin(theta) ]
+            r_e = [ (- com_e + com_a) * cos(theta), (- com_e + com_a) * sin(theta)]
+
+            τ_w = r_w[1] * F_w[0] - r_w[0] * F_w[1] + M_w
+            τ_e = r_e[1] * F_e[0] - r_e[0] * F_e[1] + M_e
+            thetaddot = -1. / I * (τ_w + τ_e)
 
         # linear accelerations (F = ma)
         xddot = 1. / m * (F_w[0] + F_e[0])
