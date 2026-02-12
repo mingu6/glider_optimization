@@ -65,35 +65,109 @@ def _normalized_airfoil_x_centroid(airfoil_name: str) -> float:
     # If centroid is slightly outside [0,1] due to numerical noise, clamp.
     return float(np.clip(cx, 0.0, 1.0))
 
+def _normalized_airfoil_area_and_centroid(airfoil_name: str) -> tuple[float, float, float]:
+    """
+    Returns (A_norm, xbar_norm, zbar_norm) for the airfoil polygon in normalized chord coordinates.
+    - A_norm: signed polygon area (use abs(A_norm) for weighting)
+    - (xbar_norm, zbar_norm): polygon centroid in the same coordinates
+    """
+    import aerosandbox as asb
+    import numpy as np
+    from .geometry import normalize_airfoil_name
+
+    name = normalize_airfoil_name(airfoil_name)
+    af = asb.Airfoil(name)
+
+    # Coordinates should be a closed polygon-ish (TE->upper->LE->lower->TE)
+    pts = np.asarray(af.coordinates, dtype=float)
+    x = pts[:, 0]
+    z = pts[:, 1]
+
+    # Shoelace formula for polygon area and centroid
+    x0 = x
+    z0 = z
+    x1 = np.roll(x, -1)
+    z1 = np.roll(z, -1)
+
+    cross = x0 * z1 - x1 * z0
+    A = 0.5 * np.sum(cross)
+
+    if abs(A) < 1e-18:
+        # Degenerate: fall back to mean x, mean z, tiny area
+        return (1e-18, float(np.mean(x)), float(np.mean(z)))
+
+    Cx = (1.0 / (6.0 * A)) * np.sum((x0 + x1) * cross)
+    Cz = (1.0 / (6.0 * A)) * np.sum((z0 + z1) * cross)
+    return (float(A), float(Cx), float(Cz))
 
 def _spanwise_centroid_x(y_half, c_half, xle_half, airfoil_name: str) -> float:
-    """Approximate 3D chordwise centroid x using volume proxy integration."""
-    #from src.geometry import mirror_full
+    """Approximate chordwise centroid x using area proxy integration (handles varying thickness/shape)."""
     from .geometry import mirror_full
+    import numpy as np
+
     y, c, xle, _ = mirror_full(
         np.asarray(y_half, float),
         np.asarray(c_half, float),
         np.asarray(xle_half, float),
         np.zeros_like(np.asarray(y_half, float)),
     )
-    # Use mid-segment integration.
+
+    # Mid-segment integration
     yA, yB = y[:-1], y[1:]
     cA, cB = c[:-1], c[1:]
     xA, xB = xle[:-1], xle[1:]
     dy = (yB - yA)
-    y_mid = 0.5 * (yA + yB)
+
     c_mid = 0.5 * (cA + cB)
     xle_mid = 0.5 * (xA + xB)
 
-    xbar_norm = _normalized_airfoil_x_centroid(airfoil_name)
+    A_norm, xbar_norm, _zbar_norm = _normalized_airfoil_area_and_centroid(airfoil_name)
+    A_norm = abs(A_norm)
 
-    # Volume proxy weight: section area scales with c^2; thickness distribution constant.
-    w = (c_mid ** 2) * np.abs(dy)
+    # Cross-sectional area scales as A_norm * c^2
+    w = (A_norm * (c_mid ** 2)) * np.abs(dy)
+
     x_mid = xle_mid + c_mid * xbar_norm
+
     denom = float(np.sum(w))
     if denom < 1e-18:
         return float(np.mean(x_mid))
     return float(np.sum(x_mid * w) / denom)
+
+def _spanwise_centroid_z(y_half, c_half, dihedral_deg: float, airfoil_name: str) -> float:
+    """Approximate vertical centroid z using dihedral offset + airfoil centroid zbar (area proxy integration)."""
+    from .geometry import mirror_full
+    import numpy as np
+
+    y, c, _xle, _ = mirror_full(
+        np.asarray(y_half, float),
+        np.asarray(c_half, float),
+        np.zeros_like(np.asarray(y_half, float)),
+        np.zeros_like(np.asarray(y_half, float)),
+    )
+
+    yA, yB = y[:-1], y[1:]
+    cA, cB = c[:-1], c[1:]
+    dy = (yB - yA)
+
+    y_mid = 0.5 * (yA + yB)
+    c_mid = 0.5 * (cA + cB)
+
+    dihedral_rad = np.deg2rad(float(dihedral_deg))
+    z_line = np.tan(dihedral_rad) * np.abs(y_mid)   # Model A
+
+    A_norm, _xbar_norm, zbar_norm = _normalized_airfoil_area_and_centroid(airfoil_name)
+    A_norm = abs(A_norm)
+
+    # Physical section centroid z = dihedral line + chord-scaled airfoil centroid z
+    z_mid = z_line + c_mid * zbar_norm
+
+    w = (A_norm * (c_mid ** 2)) * np.abs(dy)
+
+    denom = float(np.sum(w))
+    if denom < 1e-18:
+        return float(np.mean(z_mid))
+    return float(np.sum(z_mid * w) / denom)
 
 def run_pipeline(
     config_path: str,
@@ -274,10 +348,22 @@ def run_pipeline(
         cfg["wing_geometry"]["xle_half"],
         cfg["wing_geometry"]["airfoil"],
     )
+    wing_centroid_z = _spanwise_centroid_z(
+        cfg["wing_geometry"]["y_half"],
+        cfg["wing_geometry"]["c_half"],
+        cfg["wing_geometry"].get("dihedral", 0.0),
+        cfg["wing_geometry"]["airfoil"],
+    )
     elev_centroid_x = _spanwise_centroid_x(
         cfg["elevator_geometry"]["y_half"],
         cfg["elevator_geometry"]["c_half"],
         cfg["elevator_geometry"]["xle_half"],
+        cfg["elevator_geometry"]["airfoil"],
+    )
+    elev_centroid_z = _spanwise_centroid_z(
+        cfg["elevator_geometry"]["y_half"],
+        cfg["elevator_geometry"]["c_half"],
+        cfg["elevator_geometry"].get("dihedral", 0.0),
         cfg["elevator_geometry"]["airfoil"],
     )
 
@@ -298,7 +384,9 @@ def run_pipeline(
                 "elevator_geometry": cfg["elevator_geometry"],
                 "centroid": {
                     "wing_x": float(wing_centroid_x),
+                    "wing_z": float(wing_centroid_z),
                     "elevator_x": float(elev_centroid_x),
+                    "elevator_z": float(elev_centroid_z),
                 },
                 # whether we want gradients on these shapes by default
                 "wing_requires_grad": True,
