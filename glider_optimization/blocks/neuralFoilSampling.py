@@ -34,8 +34,8 @@ class NeuralFoilSampling(Block):
             return 0.5*(a+b) + 0.5*(b-a)*np.cos((2*k+1)/(2*n)*np.pi)
 
         n_1d = int(sqrt(nfConfig.n_samples))
-        aoa_1d = torch.tensor(chebyshev_nodes(nfConfig.AoA_min, nfConfig.AoA_max, n_1d), device=self.device)
-        re_1d  = torch.tensor(chebyshev_nodes(nfConfig.Re_min, nfConfig.Re_max, n_1d), device=self.device)
+        aoa_1d = torch.tensor(chebyshev_nodes(nfConfig.AoA_min, nfConfig.AoA_max, n_1d), device=self.device,dtype=torch.float32)
+        re_1d  = torch.tensor(chebyshev_nodes(nfConfig.Re_min, nfConfig.Re_max, n_1d), device=self.device,dtype=torch.float32)
         
         aoa, re = torch.meshgrid(aoa_1d, re_1d, indexing="ij")
         self.alpha_batch = aoa.reshape(-1)
@@ -77,7 +77,7 @@ class NeuralFoilSampling(Block):
             # Build LLT geometry once (airfoil name here is irrelevant: you optimize Kulfan params anyway)
             comp = _LLT_params(
                 wing["y_half"], wing["c_half"], wing["xle_half"], wing["twist_half"],
-                wing.get("airfoil", "naca4412"), # if the dict contains "airfoil" use it, otherwise default to "naca4412"
+                wing.get("airfoil", "naca4412").lower().replace("_", "").replace(" ", ""), # if the dict contains "airfoil" use it, otherwise default to "naca4412"
                 wing.get("dihedral", 0.0),
             )
 
@@ -145,7 +145,8 @@ class NeuralFoilSampling(Block):
                 self._e_llt_mirror_of = torch.as_tensor(comp_e["mirror_of"], dtype=torch.long, device=self.device)
 
                 # Fixed elevator airfoil -> fixed Kulfan params
-                elev_airfoil_name = elev.get("airfoil", "naca0012")
+                elev_airfoil_name_raw = elev.get("airfoil", "naca0012")
+                elev_airfoil_name = elev_airfoil_name_raw.lower().replace("_", "").replace(" ", "")
                 elev_k = asb.Airfoil(elev_airfoil_name).to_kulfan_airfoil()
                 self._e_kulfan_upper = torch.as_tensor(elev_k.upper_weights, dtype=torch.float32, device=self.device)
                 self._e_kulfan_lower = torch.as_tensor(elev_k.lower_weights, dtype=torch.float32, device=self.device)
