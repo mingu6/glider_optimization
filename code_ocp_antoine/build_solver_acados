@@ -1,0 +1,267 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from acados_template import AcadosOcpSolver, AcadosSimSolver
+
+from ocp_perching import build_ocp_l2, build_ocp_l1
+
+
+# ------------------------------------------------------------
+#  Helper to load IPOPT warm-start trajectories
+# ------------------------------------------------------------
+
+def load_ipopt_warm_start(X_ipopt, U_ipopt, dt_init=0.02):
+    """
+    Given IPOPT-optimal sequences:
+        X_ipopt : (N+1, nx)
+        U_ipopt : (N, nu)
+    returns a dict used to warm-start acados OCP.
+    """
+    X_ipopt = np.array(X_ipopt).copy()
+    U_ipopt = np.array(U_ipopt).copy()
+
+    # ADD dt column as last state
+    dt_col = dt_init * np.ones((X_ipopt.shape[0], 1))
+    X_ipopt = np.hstack([X_ipopt, dt_col])
+
+    warm = {}
+    warm["X"] = np.array(X_ipopt).copy()
+    warm["U"] = np.array(U_ipopt).copy()
+    return warm
+
+
+# ------------------------------------------------------------
+#  Create ACADOS solver for L2 or L1 terminal cost
+# ------------------------------------------------------------
+
+def create_acados_solver(model,
+                         x0,
+                         terminal_cost_type="L2",
+                         N=100,
+                         dt=0.02,
+                         Q=None,
+                         Q_N=None,
+                         R=0.1,
+                         S_time=1e-4):
+    """
+    Build acados OCP + solver using L2 or L1 terminal cost.
+    """
+
+    if terminal_cost_type.upper() == "L2":
+        ocp = build_ocp_l2(model=model,
+                           x0=x0,
+                           N=N,
+                           dt=dt,
+                           Q=Q,
+                           Q_N=Q_N,
+                           R=R,
+                           S_time=S_time)
+    elif terminal_cost_type.upper() == "L1":
+        ocp = build_ocp_l1(model=model,
+                           x0=x0,
+                           N=N,
+                           dt=dt,
+                           Q=Q,
+                           Q_N=Q_N,
+                           R=R,
+                           S_time=S_time)
+    else:
+        raise ValueError("terminal_cost_type must be 'L2' or 'L1'.")
+
+    # Build solver
+    solver = AcadosOcpSolver(ocp, json_file=f"acados_ocp_{terminal_cost_type}.json", 
+                             generate=True, build=True,)
+
+    # Sim solver (for forward simulation)
+    sim_solver = AcadosSimSolver(ocp, json_file=f"acados_ocp_{terminal_cost_type}.json", 
+                                 generate=True, build=True,)
+
+    return solver, sim_solver
+
+
+# ------------------------------------------------------------
+#  Warm-start acados using IPOPT super-solution
+# ------------------------------------------------------------
+
+def warm_start_acados(solver: AcadosOcpSolver, warm_dict, N):   #store_iterate to see what is in it
+    """
+    warm_dict contains:
+        warm["X"] → (N+1, nx)
+        warm["U"] → (N, nu)
+    """
+    X_ws = warm_dict["X"]
+    U_ws = warm_dict["U"]
+
+    nx = X_ws.shape[1]
+    nu = U_ws.shape[1] if U_ws.ndim > 1 else 1
+
+    # State warm-start
+    for k in range(N+1):
+        solver.set(k, "x", X_ws[k])
+
+    # Control warm-start
+    for k in range(N):
+        ctrl = U_ws[k] if nu > 1 else float(U_ws[k])
+        solver.set(k, "u", ctrl)
+
+
+# ------------------------------------------------------------
+# Shift warm-start between MPC iterations
+# ------------------------------------------------------------
+
+def shift_warm_start(solver: AcadosOcpSolver, N, nx):
+    """
+    Implements classical warm-start shifting:
+        x_k <- x_{k+1}
+        u_k <- u_{k+1}
+    """
+    # Last predicted state x_N becomes new x_0
+    xN = solver.get(N, "x")
+    solver.set(0, "x", xN)
+
+    # Shift states
+    for k in range(N):
+        x_next = solver.get(k+1, "x")
+        solver.set(k, "x", x_next)
+
+    # Shift controls
+    u_last = solver.get(N-1, "u")
+    for k in range(N-1):
+        u_next = solver.get(k+1, "u")
+        solver.set(k, "u", u_next)
+    solver.set(N-1, "u", u_last)
+
+
+# ------------------------------------------------------------
+#  Closed-loop ACADOS MPC execution
+# ------------------------------------------------------------
+
+def run_closed_loop(model,
+                    x0,
+                    solver: AcadosOcpSolver,
+                    sim: AcadosSimSolver,
+                    N,
+                    dt,
+                    max_steps=500,
+                    use_shift=True,
+                    x_target=None,
+                    Q_N=None):
+    """
+    Executes the closed-loop NMPC with fixed timestep dt.
+    Records states, controls, solver_iters, solver_times.
+    """
+
+    nx = model.x.size()[0]
+    nx_phys = nx - 1         # exclude dt_var
+    nu = model.u.size()[0]
+
+    if x_target is None:
+        x_target = np.zeros(nx)
+
+    if Q_N is None:
+        Q_N = np.diag([400, 400, 1/9, 1/9, 1, 1, 1/9])
+
+    # Logs
+    X_cl = [x0.copy()]
+    U_cl = []
+    iter_log = []
+    time_log = []
+    t = 0.0
+
+    for step in range(max_steps):
+
+        # Update initial condition constraint to current measured state
+        x_curr = X_cl[-1]
+        x_curr_phys = x_curr[:nx_phys]
+        solver.set(0, "x", x_curr)
+        solver.set(0, "lbx", x_curr_phys)
+        solver.set(0, "ubx", x_curr_phys)
+
+        # Solve OCP
+        status = solver.solve()
+        x0_opt = solver.get(0, "x")
+        dt_opt = float(x0_opt[nx-1])
+
+
+        iter_log.append(solver.get_stats("sqp_iter"))
+        time_log.append(solver.get_stats("time_tot"))
+        print(f"step {step}: sqp_iter = {iter_log[-1]}, time = {time_log[-1]:.4e}, cost = {solver.get_cost():.4e}")
+
+        if status != 0:
+            print(f"⚠️ ACADOS failed at step {step}: status={status}")
+
+        if step%10 == 0:   # or remove the bloc to not log
+            X_pred = []
+            U_pred = []
+
+            # Extract predicted states
+            for i in range(N+1):
+                xi = solver.get(i, "x")
+                X_pred.append(xi.copy())
+
+            # Extract predicted controls
+            for i in range(N):
+                ui = solver.get(i, "u")
+                U_pred.append(ui.copy())
+
+            # Example: plotting x–z projection
+            X_pred = np.array(X_pred)
+            plt.figure()
+            plt.plot(X_pred[:, 0], X_pred[:, 1], '-o')
+            plt.xlabel("x")
+            plt.ylabel("z")
+            plt.title("Predicted state trajectory at step 0")
+            plt.grid(True)
+            plt.show()
+            plt.savefig(f"acados_trajectory_{step}.png", dpi=150)
+
+        # Extract optimal control
+        u0 = solver.get(0, "u")
+        U_cl.append(u0)
+
+        # Forward simulate real system using sim solver
+        x_sim = X_cl[-1].copy()     
+        x_sim[nx-1] = dt_opt
+
+        sim.set("x", x_sim)
+        sim.set("u", u0)
+        sim.solve()
+        x_next = sim.get("x")
+        print(x_next)
+
+        X_cl.append(x_next)
+        t += dt_opt
+
+        # Terminal region check
+        x_phys = x_next[:nx_phys]
+        e = x_phys - x_target[:nx_phys]
+        value = e.T @ Q_N @ e
+        print(f"[step {step}]  terminal metric = {float(value):.3e}")
+        xl = np.array([-0.05, 0.0, np.pi/8, -np.pi/3, 0.0, -2.0, -np.inf])
+        xu = np.array([ 0.05, 0.05, np.pi/2,  np.pi/8, 2.0,  0.0,  np.inf])
+
+        # If cost is low enough but constraints not satisfied : print which ones to test
+        if value < 10.0:
+            violations = []
+            labels = ["x", "z", "theta", "phi", "xdot", "zdot", "thetadot"]
+
+            for i in range(nx_phys):
+                if x_next[i] < xl[i]:
+                    violations.append(f"{labels[i]} TOO LOW: {x_next[i]:.3f} < {xl[i]:.3f}")
+                elif x_next[i] > xu[i]:
+                    violations.append(f"{labels[i]} TOO HIGH: {x_next[i]:.3f} > {xu[i]:.3f}")
+
+            if violations:
+                print("⚠️ Terminal box NOT reached (value < 8 but constraint violation):")
+                for v in violations:
+                    print("   -", v)
+
+        if np.all(x_phys >= xl) and np.all(x_phys <= xu):
+            print(f"Perching box reached at step {step}. Stopping.")
+            break
+
+        # Warm start shift
+        if use_shift:
+            shift_warm_start(solver, N, nx)
+
+    return np.array(X_cl), np.array(U_cl), np.array(iter_log), np.array(time_log)
+

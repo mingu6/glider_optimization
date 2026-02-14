@@ -1,0 +1,324 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle, Ellipse
+
+from solver_build_acados import create_acados_solver
+from model_perching import build_perching_model, get_default_params
+from mpc_ipopt_v2 import in_terminal_region  # uses 7D states
+
+
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+
+def load_ipopt_warm_start_for_acados(dt_init, terminal_cost="L2"):
+    """
+    Loads IPOPT warm start trajectories saved as:
+      X_ipopt_L2.npy : (N+1, 7)
+      U_ipopt_L2.npy : (N,   1) or (N,)
+    Returns:
+      X_ws : (N+1, 8)  (dt appended as last state)
+      U_ws : (N,   1)
+    """
+    X_ipopt = np.load(f"X_ipopt_{terminal_cost}.npy")
+    U_ipopt = np.load(f"U_ipopt_{terminal_cost}.npy")
+
+    X_ipopt = np.asarray(X_ipopt)
+    U_ipopt = np.asarray(U_ipopt)
+
+    if U_ipopt.ndim == 1:
+        U_ipopt = U_ipopt.reshape(-1, 1)
+
+    dt_col = dt_init * np.ones((X_ipopt.shape[0], 1))
+    X_ws = np.hstack([X_ipopt, dt_col])
+
+    return X_ws, U_ipopt
+
+
+def warm_start_acados_open_loop(solver, X_ws, U_ws):
+    """
+    Sets full trajectory guess in solver memory.
+    X_ws: (N+1, nx)
+    U_ws: (N, nu)
+    """
+    N = U_ws.shape[0]
+    for k in range(N + 1):
+        solver.set(k, "x", X_ws[k])
+    for k in range(N):
+        solver.set(k, "u", U_ws[k])
+
+
+def sample_uniform_in_ellipse(idxs, eps):
+    """
+    Uniform in ellipse aligned with axes for 2D (idxs length 2).
+    eps is full EPSILONS array; ellipse radii = eps[idx0], eps[idx1]
+    """
+    i0, i1 = idxs
+    # uniform over area: r = sqrt(u)
+    r = np.sqrt(np.random.rand())
+    theta = 2 * np.pi * np.random.rand()
+    dx = r * eps[i0] * np.cos(theta)
+    dy = r * eps[i1] * np.sin(theta)
+    return i0, i1, dx, dy
+
+
+# ============================================================
+# === Cross-section sensitivity analysis (ACADOS version) ===
+# ============================================================
+
+def run_cross_section_sensitivity_acados():
+
+    # --- identical config ---
+    GROUPS = {
+        "pos": [0, 1],
+        "vel": [4, 5],
+        "att": [2, 6],
+        "phi": [3],
+    }
+
+    GROUP_COLORS = {
+        "pos": "blue",
+        "vel": "green",
+        "att": "purple",
+        "phi": "orange",
+    }
+
+    EPSILONS = np.array([0.25, 0.05, 0.2, 0.15, 0.4, 0.4, 0.2]) 
+    N_SAMPLES = 20
+    PERTURB_AT_INDEX = 40 
+    SAVE_PREFIX = "sensitivity_acados"
+
+    # ============================================================
+    # Model + parameters
+    # ============================================================
+    params = get_default_params()
+    model = build_perching_model(params)
+
+    nx = model.x.size()[0]          # = 8 in your acados model (dt is extra state)
+    nx_phys = nx - 1                # = 7
+    nu = model.u.size()[0]
+
+    # Costs
+    Q = np.diag([5., 5., 0., 0., 1., 1., 0.])
+    Q_N = np.diag([400, 400, 1/9, 1/9, 1, 1, 1/9])
+    R = 0.1
+
+    # Horizon
+    N = 75
+    dt_init = 0.01  # initial guess for dt state (and for warm-start appended dt)
+    dt_init_perturb = 0.01
+
+    # Physical initial condition (7D)
+    x0_phys = np.array([-3.5, 0.1, 0., 0., 7., 0., 0.])
+    x_target = np.zeros(nx_phys)
+
+    # Full acados x0 (8D)
+    x0 = np.hstack([x0_phys, dt_init])
+
+    # ============================================================
+    # Warm start from IPOPT
+    # ============================================================
+    print(" Loading IPOPT warm start for ACADOS...")
+    X_ws, U_ws = load_ipopt_warm_start_for_acados(dt_init=dt_init, terminal_cost="L2")
+
+    # If IPOPT horizon length differs, adapt N to match warm start (recommended)
+    N_ws = U_ws.shape[0]
+    if N_ws != N:
+        print(f"⚠️ Overriding N from {N} to IPOPT warm-start N={N_ws} for consistency.")
+        N = N_ws
+
+    print("🚀 Solving nominal ACADOS horizon (warm-started)...")
+
+    solver, _ = create_acados_solver(
+        model=model,
+        x0=x0,                      # 8D
+        terminal_cost_type="L2",
+        N=N,
+        dt=dt_init,                 # used in build_ocp_common; in current setup tf=N anyway
+        Q=Q,
+        Q_N=Q_N,
+        R=R
+    )
+
+    # Warm start guess
+    warm_start_acados_open_loop(solver, X_ws[:N+1], U_ws[:N])
+
+    # Enforce initial state on physical part only (dimension 7)
+    solver.set(0, "lbx", x0_phys)
+    solver.set(0, "ubx", x0_phys)
+
+    status = solver.solve()
+    if status != 0:
+        print(f"⚠️ Nominal solve returned status={status}. Dumping iterate for debugging.")
+        solver.store_iterate("iterate_nominal.json")
+
+    # Extract nominal trajectory
+    X_ref = np.array([solver.get(k, "x") for k in range(N+1)])
+    U_ref = np.array([solver.get(k, "u") for k in range(N)])
+
+    print("✅ Nominal ACADOS trajectory computed.")
+
+    # ============================================================
+    # Perturbation setup
+    # ============================================================
+    k_inject = PERTURB_AT_INDEX
+    x_inject = X_ref[k_inject, :nx_phys].copy()   # only physical part for perturbations
+
+    # Time vector for phi plots
+    dt_opt_ref = X_ref[0, -1]
+    time_vec_ref = np.arange(N) * dt_opt_ref
+
+    # Reference visualization
+    plt.figure(figsize=(7, 5))
+    plt.plot(X_ref[:, 0], X_ref[:, 1], "k-", lw=2, label="reference trajectory")
+    plt.plot(X_ref[k_inject, 0], X_ref[k_inject, 1], "ro", markersize=8, label=f"perturb @ k={k_inject}")
+    plt.xlabel("x [m]")
+    plt.ylabel("z [m]")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"{SAVE_PREFIX}_reference_k{k_inject}_test.png", dpi=150)
+    plt.close()
+
+    # ============================================================
+    # Loop over perturbation groups
+    # ============================================================
+    for group_name, idxs in GROUPS.items():
+        color = GROUP_COLORS[group_name]
+        trajectories = []
+        endpoints = []
+
+        print(f"\n🎯 ACADOS group: {group_name}")
+
+        for _ in range(N_SAMPLES):
+            perturb = np.zeros(nx_phys)
+
+            if len(idxs) == 2:
+                i0, i1, dx, dy = sample_uniform_in_ellipse(idxs, EPSILONS)
+                perturb[i0] = dx
+                perturb[i1] = dy
+
+            elif len(idxs) == 1:
+                # 1D "circle" = interval; keep uniform on [-eps, eps]
+                i0 = idxs[0]
+                perturb[i0] = np.random.uniform(-EPSILONS[i0], EPSILONS[i0])
+
+            x_init_phys = x_inject + perturb
+            x_init = np.hstack([x_init_phys, dt_init_perturb])  # full 8D
+
+            # New solver instance (clean). If you prefer speed, you can reuse one solver and just reset.
+            solver_i, _ = create_acados_solver(
+                model=model,
+                x0=x_init,
+                terminal_cost_type="L2",
+                N=N, #-PERTURB_AT_INDEX,
+                dt=dt_init_perturb,
+                Q=Q,
+                Q_N=Q_N,
+                R=R
+            )
+
+            # Warm start each perturbed solve using the nominal solution (better than IPOPT usually)
+            warm_start_acados_open_loop(solver_i, X_ref, U_ref)
+            #warm_start_acados_open_loop_shifted(solver_i, X_ref, U_ref, k_start=PERTURB_AT_INDEX, N_i=N-PERTURB_AT_INDEX)
+
+            # force the guess at node 0 to match the perturbed initial condition
+            x0_guess = np.hstack([x_init_phys, dt_init_perturb])
+            #solver_i.set(0, "x", x0_guess)
+
+            # Enforce initial physical state
+            solver_i.set(0, "lbx", x_init_phys)
+            solver_i.set(0, "ubx", x_init_phys)
+
+            status = solver_i.solve()
+            if status != 0:
+                #solver_i.store_iterate(f"iterate_{group_name}.json")
+                print("Solver failed to converge for this perturbation. Skipping.")
+                print(f"⚠️ Perturbed solve returned status={status}.")
+
+            X_opt = np.array([solver_i.get(k, "x") for k in range(N+1)])  #-PERTURB_AT_INDEX
+            trajectories.append(X_opt)
+            endpoints.append(X_opt[-1, :nx_phys])  # only 7D for terminal test
+
+        endpoints = np.array(endpoints)
+        success = sum(in_terminal_region(xf) for xf in endpoints)
+        pct = 100 * success / len(endpoints)
+
+        dt_opt = X_opt[-1, -1]
+        time_vec = np.arange(N) * dt_opt + PERTURB_AT_INDEX * dt_opt_ref
+
+        # ========================================================
+        # Plotting (mirrors IPOPT)
+        # ========================================================
+        plt.figure(figsize=(6, 6))
+        plt.title(f"{group_name.upper()} perturbations – {pct:.1f}% success")
+        plt.grid(True)
+
+        if group_name == "pos":
+            plt.xlabel("x [m]")
+            plt.ylabel("z [m]")
+            plt.plot(X_ref[:, 0], X_ref[:, 1], "k-", lw=2.5)
+            plt.plot(X_ref[k_inject, 0], X_ref[k_inject, 1], "ro", markersize=6)
+            rect = Rectangle((-0.05, 0.0), 0.1, 0.05, edgecolor="red", facecolor="none", lw=2)
+            plt.gca().add_patch(rect)
+
+            # epsilon ellipse at injection point
+            ell = Ellipse((X_ref[k_inject, 0], X_ref[k_inject, 1]),
+                          2*EPSILONS[0], 2*EPSILONS[1],
+                          edgecolor=color, facecolor="none", lw=1.5, ls="--")
+            plt.gca().add_patch(ell)
+
+            for X in trajectories:
+                plt.plot(X[:, 0], X[:, 1], color=color, alpha=0.25)
+
+        elif group_name == "vel":
+            plt.xlabel("ẋ [m/s]")
+            plt.ylabel("ż [m/s]")
+            plt.plot(X_ref[:, 4], X_ref[:, 5], "k-", lw=2.5)
+            plt.plot(X_ref[k_inject, 4], X_ref[k_inject, 5], "ro", markersize=6)
+            rect = Rectangle((0.0, -2.0), 2.0, 2.0, edgecolor="red", facecolor="none", lw=2)
+            plt.gca().add_patch(rect)
+
+            ell = Ellipse((X_ref[k_inject, 4], X_ref[k_inject, 5]),
+                          2*EPSILONS[4], 2*EPSILONS[5],
+                          edgecolor=color, facecolor="none", lw=1.5, ls="--")
+            plt.gca().add_patch(ell)
+
+            for X in trajectories:
+                plt.plot(X[:, 4], X[:, 5], color=color, alpha=0.25)
+
+        elif group_name == "att":
+            plt.xlabel(r"$\theta$ [rad]")
+            plt.ylabel(r"$\dot{\theta}$ [rad/s]")
+            plt.plot(X_ref[:, 2], X_ref[:, 6], "k-", lw=2.5)
+            plt.plot(X_ref[k_inject, 2], X_ref[k_inject, 6], "ro", markersize=6)
+
+            ell = Ellipse((X_ref[k_inject, 2], X_ref[k_inject, 6]),
+                          2*EPSILONS[2], 2*EPSILONS[6],
+                          edgecolor=color, facecolor="none", lw=1.5, ls="--")
+            plt.gca().add_patch(ell)
+
+            for X in trajectories:
+                plt.plot(X[:, 2], X[:, 6], color=color, alpha=0.25)
+
+        elif group_name == "phi":
+            plt.xlabel("time [s]")
+            plt.ylabel("ϕ [rad]")
+
+            for X in trajectories:
+                plt.plot(time_vec, X[:-1, 3], color=color, alpha=0.25)
+
+            plt.plot(time_vec_ref, X_ref[:-1, 3], "k-", lw=2.5)
+            plt.plot(time_vec_ref[k_inject], X_ref[k_inject, 3], "ro", markersize=6)
+            plt.axhline(-np.pi/3, color="red", ls="--")
+            plt.axhline(np.pi/8, color="red", ls="--")
+
+        plt.tight_layout()
+        plt.savefig(f"{SAVE_PREFIX}_{group_name}_k{k_inject}_test.png", dpi=150)
+        plt.close()
+
+    print("\n✅ ACADOS cross-section sensitivity analysis completed.")
+
+
+if __name__ == "__main__":
+    run_cross_section_sensitivity_acados()

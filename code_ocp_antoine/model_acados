@@ -1,0 +1,188 @@
+import casadi as cs
+import numpy as np
+from acados_template import AcadosModel
+
+
+def get_default_params():
+    """
+    Returns the physical parameter vector 'params'
+    exactly in the order expected by build_perching_model().
+
+    Order:
+    [l_w_i, l_w_f, l, l_e, l_f, 
+     m_w, m_e, m_f,
+     rho, S_w, S_e,
+     m, g, I]
+    """
+
+    # Physical constants (same as IPOPT code)
+    m = 0.065
+    l_w_i = 0.005
+    l_w_f = 0.015
+    l = 0.26
+    l_e = 0.02
+
+    rho = 1.2041
+    S_w = 0.086
+    S_e = 0.022
+
+    # Mass distribution — same computation as IPOPT
+    m_w = 0.6 * m * S_w / (S_w + S_e)
+    m_e = 0.6 * m * S_e / (S_w + S_e)
+    m_f = 0.4 * m
+
+    # Wing midpoint
+    l_w = 0.5 * (l_w_i + l_w_f)
+
+    # Fuselage COM location — same as IPOPT
+    l_f = -(l_w * m_w + (l - l_e) * m_e) / m_f
+
+    # Gravity
+    g = 9.81
+
+    # Moment of inertia — IPOPT version
+    I = m_w * l_w**2 + m_e * (l + l_e)**2 + m_f * l_f**2
+
+    return [
+        l_w_i, l_w_f, l, l_e, l_f,
+        m_w, m_e, m_f,
+        rho, S_w, S_e,
+        m, g, I
+    ]
+
+def build_perching_model(params):
+    """
+    Build the CasADi dynamic model and wrap it as an AcadosModel.
+    State vector x = [x, z, theta, phi, xdot, zdot, thetadot]
+    Control u = phidot
+    """
+
+    # -------------------------------------------------------------------------
+    # Unpack parameters
+    # -------------------------------------------------------------------------
+    l_w_i, l_w_f, l, l_e, l_f, m_w, m_e, m_f, rho, S_w, S_e, m, g, I = params
+
+    # -------------------------------------------------------------------------
+    # Define symbols
+    # -------------------------------------------------------------------------
+    x      = cs.SX.sym("x")
+    z      = cs.SX.sym("z")
+    theta  = cs.SX.sym("theta")
+    phi    = cs.SX.sym("phi")
+    xdot   = cs.SX.sym("xdot")
+    zdot   = cs.SX.sym("zdot")
+    thetadot = cs.SX.sym("thetadot")
+    dt_var = cs.SX.sym("dt")          #decision variable (as state)
+
+    phidot = cs.SX.sym("phidot")   # control
+
+    states   = cs.vertcat(x, z, theta, phi, xdot, zdot, thetadot, dt_var)
+    controls = cs.vertcat(phidot)
+
+    # -------------------------------------------------------------------------
+    # Aerodynamic model
+    # -------------------------------------------------------------------------
+    def C_L(alpha):
+        return 2 * cs.sin(alpha) * cs.cos(alpha)
+
+    def C_D(alpha):
+        return 2 * cs.sin(alpha)**2
+
+    def C_M(alpha):
+        return -C_L(alpha) * 0.25
+
+    def mc_to_wcom(lw):
+        return lw + 0.003
+
+    # Centers of mass
+    l_w_m = (l_w_i + l_w_f) / 2
+    com_w = l_w_m + mc_to_wcom(l_w_m)  # wing COM
+    com_e = l + l_e                    # elevator COM
+    com_f = l_f                        # fuselage COM
+    com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
+
+    # -------------------------------------------------------------------------
+    # Velocities at wing and elevator aerodynamic centers
+    # -------------------------------------------------------------------------
+    x_wdot = xdot + l_w_m * thetadot * cs.sin(theta)
+    z_wdot = zdot - l_w_m * thetadot * cs.cos(theta)
+
+    x_edot = xdot \
+             + l * thetadot * cs.sin(theta) \
+             + l_e * (thetadot + phidot) * cs.sin(theta + phi)
+    z_edot = zdot \
+             - l * thetadot * cs.cos(theta) \
+             - l_e * (thetadot + phidot) * cs.cos(theta + phi)
+
+    # Aerodynamics
+    c = cs.fabs(l_w_f - l_w_i)
+
+    alpha_w = theta - cs.atan2(z_wdot, x_wdot)
+    v_w = cs.sqrt(x_wdot**2 + z_wdot**2 + 1e-8)
+    F_Lw = C_L(alpha_w) * cs.vertcat(-z_wdot, x_wdot)
+    F_Dw = C_D(alpha_w) * cs.vertcat(-x_wdot, -z_wdot)
+    F_w = 0.5 * rho * v_w * S_w * (F_Lw + F_Dw)
+    M_w = 0.5 * rho * v_w**2 * S_w * c * C_M(alpha_w)
+
+    alpha_e = theta + phi - cs.atan2(z_edot, x_edot)
+    v_e = cs.sqrt(x_edot**2 + z_edot**2 + 1e-8)
+    F_Le = C_L(alpha_e) * cs.vertcat(-z_edot, x_edot)
+    F_De = C_D(alpha_e) * cs.vertcat(-x_edot, -z_edot)
+    F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
+    M_e = 0.5 * rho * v_e**2 * S_e * c * C_M(alpha_e)
+
+    # Moment arms
+    r_w = [(-com_w + com_a) * cs.cos(theta),
+           (-com_w + com_a) * cs.sin(theta)]
+    r_e = [(-com_e + com_a) * cs.cos(theta),
+           (-com_e + com_a) * cs.sin(theta)]
+
+    tau_w = r_w[1] * F_w[0] - r_w[0] * F_w[1] + M_w
+    tau_e = r_e[1] * F_e[0] - r_e[0] * F_e[1] + M_e
+
+    # -------------------------------------------------------------------------
+    # Dynamics
+    # -------------------------------------------------------------------------
+    thetaddot = -(tau_w + tau_e) / I
+    xddot = (F_w[0] + F_e[0]) / m
+    zddot = (F_w[1] + F_e[1]) / m - g
+
+    #we have to scale the dynamics because of the time scaling
+    xdot_phys = cs.vertcat(
+        xdot,
+        zdot,
+        thetadot,
+        phidot,
+        xddot,
+        zddot,
+        thetaddot
+    )
+
+    xdot_expr = cs.vertcat(dt_var * xdot_phys, 0.0)  # dt is constant in time
+
+    # -------------------------------------------------------------------------
+    # Wrap into Acados model
+    # -------------------------------------------------------------------------
+    model = AcadosModel()
+    model.name = "perching_model"
+    model.x = states
+    model.u = controls
+
+    # continuous-time dynamics for ACADOS (ERK integrator will use this)
+    model.f_expl_expr = xdot_expr
+    model.f_impl_expr = cs.SX([])  # no implicit dynamics  
+
+    # no online parameters for now
+    model.p = cs.SX([])
+
+    return model
+
+# ======= Test the model creation =======
+params = get_default_params()
+model = build_perching_model(params)
+
+print("model name:", model.name)
+print("nx:", model.x.size()[0])
+print("nu:", model.u.size()[0])
+print("f_expl_expr shape:", model.f_expl_expr.size())
+print("p size:", model.p.size())
