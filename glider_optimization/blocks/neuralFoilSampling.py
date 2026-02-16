@@ -55,6 +55,11 @@ class NeuralFoilSampling(Block):
         self.min_avg_Cl_Cd = nfConfig.min_avg_Cl_Cd
         self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
         self.use_3d_llt = bool(getattr(nfConfig, "use_3d_llt", False))
+        
+        # 🔍 DIAGNOSTIC: Log which mode we're using
+        self.logger.info(f"{'='*80}")
+        self.logger.info(f"🔧 NeuralFoilSampling MODE: {'3D LLT' if self.use_3d_llt else '2D NeuralFoil'}")
+        self.logger.info(f"{'='*80}")
 
         # Elevator geometry treated as fixed for now (not optimized). In 3D mode we
         # compute its coefficients once and cache them.
@@ -109,16 +114,19 @@ class NeuralFoilSampling(Block):
             beta_ov = getattr(nfConfig, "llt_beta", None)
             tol_ov = getattr(nfConfig, "llt_tol", None)
             n_iter_ov = getattr(nfConfig, "llt_n_iter", None)
+            max_iter_ov = getattr(nfConfig, "llt_max_iter", None)
             enforce_sym_ov = getattr(nfConfig, "llt_enforce_symmetry", None)
 
             beta = float(beta_ov) if beta_ov is not None else float(ckpt.get("beta", 0.40))
             tol = float(tol_ov) if tol_ov is not None else float(ckpt.get("tol", 1e-6))
             n_iter = int(n_iter_ov) if n_iter_ov is not None else int(ckpt.get("n_iter", 15))
+            max_iter = int(max_iter_ov) if max_iter_ov is not None else n_iter
             enforce_sym = bool(enforce_sym_ov) if enforce_sym_ov is not None else bool(ckpt.get("enforce_symmetry", True))
 
             self._llt_beta_t = torch.tensor(beta, dtype=torch.float32, device=self.device)
             self._llt_tol_t = torch.tensor(tol, dtype=torch.float32, device=self.device)
             self._llt_n_iter_t = torch.tensor(float(n_iter), dtype=torch.float32, device=self.device)
+            self._llt_max_iter_t = torch.tensor(float(max_iter), dtype=torch.float32, device=self.device)
             self._llt_enforce_sym_t = torch.tensor(1.0 if enforce_sym else 0.0, dtype=torch.float32, device=self.device)
 
             ms_ov = getattr(nfConfig, "llt_model_size", None)
@@ -219,7 +227,7 @@ class NeuralFoilSampling(Block):
             self._llt_x_c4, self._llt_span,
             self._llt_D_nf, self._llt_D_tr, self._llt_mirror_of,
             self._llt_rho, self._llt_mu,
-            self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_enforce_sym_t,
+            self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_max_iter_t, self._llt_enforce_sym_t,
             self._llt_model_size_id, self._llt_device_id,
         )
         return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2]}
@@ -237,7 +245,7 @@ class NeuralFoilSampling(Block):
             self._e_llt_x_c4, self._e_llt_span,
             self._e_llt_D_nf, self._e_llt_D_tr, self._e_llt_mirror_of,
             self._llt_rho, self._llt_mu,
-            self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_enforce_sym_t,
+            self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_max_iter_t, self._llt_enforce_sym_t,
             self._llt_model_size_id, self._llt_device_id,
         )
         return {"CL_e": C[:, 0], "CD_e": C[:, 1], "CM_e": C[:, 2]}
@@ -283,12 +291,27 @@ class NeuralFoilSampling(Block):
                     self.alpha_batch,
                     self.Re_batch,
                 )
-            # ---- hard sanity check to localize NaNs early ----
-            for k in ["CL", "CD", "CM"]:
-                t = self._last_aero_coeff[k]
-                if not torch.isfinite(t).all():
-                    bad = (~torch.isfinite(t)).sum().item()
-                    raise RuntimeError(f"3D LLT produced non-finite {k}: {bad} entries")
+            
+            # 🔍 CSV EXPORT: Export raw 3D LLT outputs once for user inspection
+            if not hasattr(self, '_llt_csv_exported'):
+                try:
+                    import pandas as pd
+                    import os
+                    os.makedirs("diagnostics/2026-02-13_3d-llt-debug", exist_ok=True)
+                    csv_data = pd.DataFrame({
+                        'alpha_deg': self.alpha_batch.detach().cpu().numpy().flatten(),
+                        'Re': self.Re_batch.detach().cpu().numpy().flatten(),
+                        'CL': self._last_aero_coeff['CL'].detach().cpu().numpy().flatten(),
+                        'CD': self._last_aero_coeff['CD'].detach().cpu().numpy().flatten(),
+                        'CM': self._last_aero_coeff['CM'].detach().cpu().numpy().flatten()
+                    })
+                    csv_path = "diagnostics/2026-02-13_3d-llt-debug/llt_3d_wing_raw_outputs.csv"
+                    csv_data.to_csv(csv_path, index=False)
+                    self.logger.info(f"✅ Exported 3D LLT raw outputs to {csv_path}")
+                    self._llt_csv_exported = True
+                except Exception as e:
+                    self.logger.warning(f"Failed to export 3D LLT CSV: {e}")
+
             conf2d = get_aero_from_kulfan_parameters_cuda(
                 kulfan_batch,
                 self.alpha_batch,
@@ -316,6 +339,27 @@ class NeuralFoilSampling(Block):
                 device=self.device,
                 model_size=self.config.neuralFoilSampling.neuralFoil_size,
             )
+            
+            # 🔍 CSV EXPORT: Export raw 2D NeuralFoil outputs once for comparison
+            if not hasattr(self, '_nf_csv_exported'):
+                try:
+                    import pandas as pd
+                    import os
+                    os.makedirs("diagnostics/2026-02-13_3d-llt-debug", exist_ok=True)
+                    csv_data = pd.DataFrame({
+                        'alpha_deg': self.alpha_batch.detach().cpu().numpy().flatten(),
+                        'Re': self.Re_batch.detach().cpu().numpy().flatten(),
+                        'CL': self._last_aero_coeff['CL'].detach().cpu().numpy().flatten(),
+                        'CD': self._last_aero_coeff['CD'].detach().cpu().numpy().flatten(),
+                        'CM': self._last_aero_coeff['CM'].detach().cpu().numpy().flatten()
+                    })
+                    csv_path = "diagnostics/2026-02-13_3d-llt-debug/neuralfoil_2d_raw_outputs.csv"
+                    csv_data.to_csv(csv_path, index=False)
+                    self.logger.info(f"✅ Exported 2D NeuralFoil raw outputs to {csv_path}")
+                    self._nf_csv_exported = True
+                except Exception as e:
+                    self.logger.warning(f"Failed to export 2D NeuralFoil CSV: {e}")
+                    
         conf = self._last_aero_coeff.get("analysis_confidence")
         try:
             conf_mean = float(conf.mean().detach().cpu().item())

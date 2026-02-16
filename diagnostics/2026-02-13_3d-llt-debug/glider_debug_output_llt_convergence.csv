@@ -1,0 +1,2 @@
+iteration,max_iter,final_residual,residual_gradient_recent,residual_gradient_mid
+64,200,9.83e-07,1.49e-07,0.0002

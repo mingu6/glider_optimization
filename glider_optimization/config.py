@@ -97,9 +97,14 @@ class NeuralFoilSamplingConfig(BaseModel):
 
     # Optional overrides (if None, fall back to checkpoint values)
     llt_n_iter: int | None = None
+    llt_max_iter: int | None = None  # Maximum iterations for adaptive convergence
     llt_beta: float | None = None
     llt_tol: float | None = None
     llt_enforce_symmetry: bool | None = None
+    
+    # Backward pass mode: "implicit" (fast), "explicit" (robust), or "hybrid" (auto-fallback)
+    llt_backward_mode: str = "hybrid"
+    llt_fallback_residual_threshold: float = 1e-4  # Residual threshold to trigger explicit fallback
 
     # cuNF size used inside LLT (defaults to neuralFoil_size)
     llt_model_size: str | None = None

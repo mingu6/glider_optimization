@@ -320,6 +320,7 @@ class LLTImplicitFn(torch.autograd.Function):
         beta_t: torch.Tensor,
         tol_t: torch.Tensor,
         n_iter_t: torch.Tensor,
+        max_iter_t: torch.Tensor,
         enforce_sym_t: torch.Tensor,
         model_size_id: torch.Tensor,
         device_id: torch.Tensor,
@@ -354,23 +355,78 @@ class LLTImplicitFn(torch.autograd.Function):
             aero0 = _eval_nf_batched(upper, lower, LE, TE, alpha_geo, Re, const)
             Gamma = 0.5 * V2 * c0 * aero0["CL"]  # (B,n_pan)
 
-            for _ in range(const.n_iter):
+            # Adaptive convergence: try n_iter first, then continue up to max_iter
+            max_iter = int(max_iter_t.item())
+            n_iter = const.n_iter
+            converged = False
+            final_rel_diff = float('inf')
+            residual_history = []  # 🔍 Track residual for gradient analysis
+            
+            for iter_idx in range(max_iter):
                 Gamma_new = _G(Gamma, alpha2, V2, upper, lower, LE, TE, const)
                 diff = torch.max(torch.abs(Gamma_new - Gamma))
                 denom = torch.max(torch.tensor(1.0, device=Gamma.device), torch.max(torch.abs(Gamma)))
-                if (diff / denom).item() < const.tol:
+                rel_diff = (diff / denom).item()
+                final_rel_diff = rel_diff
+                
+                # 🔍 Track residual history for gradient analysis
+                residual_history.append(rel_diff)
+                
+                if rel_diff < const.tol:
                     Gamma = Gamma_new
+                    converged = True
+                    if iter_idx < n_iter:
+                        print(f"🔍 LLT converged at iteration {iter_idx+1}/{n_iter}, rel_diff={rel_diff:.2e}")
+                    else:
+                        print(f"🔍 LLT converged at iteration {iter_idx+1}/{max_iter} (adaptive), rel_diff={rel_diff:.2e}")
                     break
                 Gamma = Gamma_new
+            
+            # 🔍 Store convergence info for backward pass decision
+            ctx.converged = converged
+            ctx.actual_iters = iter_idx + 1 if converged else max_iter
+            ctx.residual_history = residual_history
+            
+            # 🔍 DIAGNOSTIC: Analyze residual gradient to find optimal clipping point
+            if len(residual_history) >= 10:
+                # Compute recent gradient (last 5 iterations)
+                recent_gradient = abs(residual_history[-1] - residual_history[-5]) / 5
+                ctx.residual_gradient = recent_gradient
+                
+                # Also compute mid-range gradient (around iteration 15-20)
+                if len(residual_history) >= 20:
+                    mid_gradient = abs(residual_history[19] - residual_history[14]) / 5
+                    print(f"🔍 Residual gradients: recent={recent_gradient:.2e}, mid (iter 15-20)={mid_gradient:.2e}")
+            else:
+                ctx.residual_gradient = float('inf')
+            
+            if not converged:
+                # Find which samples didn't converge
+                diff_per_sample = torch.max(torch.abs(Gamma_new - Gamma), dim=1)[0]
+                worst_idx = torch.argmax(diff_per_sample).item()
+                worst_alpha = alpha2[worst_idx, 0].item()
+                worst_V = V2[worst_idx, 0].item()
+                worst_Re = (const.rho * worst_V * const.c.mean() / const.mu).item()
+                print(f"⚠️  LLT did NOT converge after {max_iter} iterations, final rel_diff={final_rel_diff:.2e}")
+                print(f"    Worst sample: AoA={worst_alpha:.1f}°, V={worst_V:.2f} m/s, Re≈{worst_Re:.0f}")
 
             Gamma_star = Gamma
             C = _compute_coeffs(Gamma_star, alpha2, V2, upper, lower, LE, TE, const)
+            
+            # Store final residual for backward pass decision
+            ctx.final_residual = final_rel_diff
+            
+            # DIAGNOSTIC: Check for NaN/Inf in coefficients
+            if not torch.isfinite(C).all():
+                print(f"🚨 LLT produced non-finite coefficients!")
+                print(f"   C stats: min={C.min().item():.6f}, max={C.max().item():.6f}")
+                print(f"   Gamma stats: min={Gamma_star.min().item():.6f}, max={Gamma_star.max().item():.6f}")
 
         ctx.save_for_backward(
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
             dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
-            beta_t, tol_t, n_iter_t, enforce_sym_t
+            beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
         )
         return C  # (B,3)
 
@@ -393,7 +449,7 @@ class LLTImplicitFn(torch.autograd.Function):
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
             dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
-            beta_t, tol_t, n_iter_t, enforce_sym_t
+            beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
         ) = saved
 
         model_size = _ID_TO_MODEL_SIZE[int(ctx.model_size_id)]
@@ -616,6 +672,7 @@ class LLTImplicitFn(torch.autograd.Function):
             g_upper, g_lower, g_LE, g_TE = out_grads
 
         # Return grads aligned with forward() inputs of LLTImplicitFn.apply(...)
+        # Updated to include max_iter_t parameter (one more None)
         return (
             None,  # alpha
             None,  # V
@@ -623,8 +680,8 @@ class LLTImplicitFn(torch.autograd.Function):
             g_lower,
             g_LE,
             g_TE,
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None
         )
 
 
@@ -642,6 +699,7 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
         computation_params: dict,
         airflow: dict,
         n_iter: int = 30,
+        max_iter: int | None = None,
         beta: float = 0.40,
         tol: float = 1e-4,
         enforce_symmetry: bool = True,
@@ -684,6 +742,7 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
         self.beta_t = torch.tensor(float(beta), dtype=torch.float32, device=self.device)
         self.tol_t = torch.tensor(float(tol), dtype=torch.float32, device=self.device)
         self.n_iter_t = torch.tensor(int(n_iter), dtype=torch.float32, device=self.device)
+        self.max_iter_t = torch.tensor(int(max_iter if max_iter is not None else n_iter), dtype=torch.float32, device=self.device)
         self.enforce_sym_t = torch.tensor(1.0 if enforce_symmetry else 0.0, dtype=torch.float32, device=self.device)
 
         self.model_size_id = torch.tensor(_MODEL_SIZE_TO_ID[self.model_size], dtype=torch.int64, device=self.device)
@@ -699,7 +758,7 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
             self.dy, self.y, self.c, self.tw, self.S, self.cbar, self.x_c4, self.span,
             self.D_nf, self.D_tr, self.mirror_of,
             self.rho, self.mu,
-            self.beta_t, self.tol_t, self.n_iter_t, self.enforce_sym_t,
+            self.beta_t, self.tol_t, self.n_iter_t, self.max_iter_t, self.enforce_sym_t,
             self.model_size_id, self.device_id
         )  # (B,3)
 

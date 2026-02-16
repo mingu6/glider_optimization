@@ -226,6 +226,21 @@ class COCsys:
             lbw += self.state_lb
             ubw += self.state_ub
             x0 = self.dyn_fn(x0, u0, auxvar_value).full().ravel().tolist()
+            
+            # 🔍 DIAGNOSTIC: Log initial guess values and detect rollout explosion
+            if hasattr(self, '_debug_init_guess') and self._debug_init_guess:
+                if k < 5:
+                    print(f"🔍 Stage {k+1} initial guess: {[f'{v:.4f}' for v in x0]}")
+
+                x0_arr = np.array(x0, dtype=float)
+                if (not np.all(np.isfinite(x0_arr))) or np.max(np.abs(x0_arr)) > 1e6:
+                    print(
+                        f"🔍 Stage {k+1} rollout exploded: "
+                        f"finite={np.all(np.isfinite(x0_arr))}, "
+                        f"max_abs={np.nanmax(np.abs(x0_arr))}"
+                    )
+                    print(f"🔍 Stage {k+1} state snapshot: {x0_arr.tolist()}")
+            
             w0 += x0
 
             # Add constraint for the dynamics
@@ -256,6 +271,88 @@ class COCsys:
                          'ipopt.warm_start_mult_bound_push': 1e-6})
         prob = {'f': J, 'x': vertcat(*w), 'g': vertcat(*g)}
         solver = nlpsol('solver', 'ipopt', prob, opts)
+        
+        # 🔍 DEEP DIAGNOSTIC: Evaluate NLP objects at initial guess before IPOPT
+        if hasattr(self, '_debug_nlp_eval') and self._debug_nlp_eval:
+            try:
+                x_sym = prob['x']
+                g_sym = prob['g']
+                f_sym = prob['f']
+                g_fn = Function('dbg_g_fn', [x_sym], [g_sym])
+                jac_g_fn = Function('dbg_jac_g_fn', [x_sym], [jacobian(g_sym, x_sym)])
+                grad_f_fn = Function('dbg_grad_f_fn', [x_sym], [gradient(f_sym, x_sym)])
+
+                x0_dm = DM(w0)
+                g0 = np.array(g_fn(x0_dm)).astype(float).reshape(-1)
+                jac0 = np.array(jac_g_fn(x0_dm)).astype(float)
+                grad_f0 = np.array(grad_f_fn(x0_dm)).astype(float).reshape(-1)
+
+                print(f"🔍 NLP dbg: x0 size={x0_dm.numel()}, g size={g0.size}, jac shape={jac0.shape}")
+                print(f"🔍 NLP dbg: g has_nan={np.isnan(g0).any()}, g has_inf={np.isinf(g0).any()}")
+                print(f"🔍 NLP dbg: jac has_nan={np.isnan(jac0).any()}, jac has_inf={np.isinf(jac0).any()}")
+                print(f"🔍 NLP dbg: grad_f has_nan={np.isnan(grad_f0).any()}, grad_f has_inf={np.isinf(grad_f0).any()}")
+
+                # Report first failing Jacobian entry and map to stage/component in interleaved layout
+                bad_jac = np.argwhere(~np.isfinite(jac0))
+                if bad_jac.size > 0:
+                    row = int(bad_jac[0, 0])
+                    col = int(bad_jac[0, 1])
+                    val = jac0[row, col]
+                    print(f"🔍 NLP dbg: first bad jac at (row={row}, col={col}), value={val}")
+
+                    block_x = self.n_state + self.n_control
+                    stage_x = col // block_x
+                    off_x = col % block_x
+                    if off_x < self.n_state:
+                        x_kind = 'state'
+                        x_comp = off_x
+                    else:
+                        x_kind = 'control'
+                        x_comp = off_x - self.n_state
+
+                    block_g = self.n_path_inequ_cstr + self.n_path_equ_cstr + self.n_state
+                    stage_g = row // block_g
+                    off_g = row % block_g
+                    if off_g < self.n_path_inequ_cstr:
+                        g_kind = 'path_ineq'
+                        g_comp = off_g
+                    elif off_g < self.n_path_inequ_cstr + self.n_path_equ_cstr:
+                        g_kind = 'path_eq'
+                        g_comp = off_g - self.n_path_inequ_cstr
+                    else:
+                        g_kind = 'dynamics'
+                        g_comp = off_g - self.n_path_inequ_cstr - self.n_path_equ_cstr
+
+                    x0_val = float(np.array(x0_dm).reshape(-1)[col])
+                    g0_val = float(g0[row]) if np.isfinite(g0[row]) else g0[row]
+                    print(
+                        f"🔍 NLP dbg map: row {row} -> stage {stage_g}, {g_kind}[{g_comp}] ; "
+                        f"col {col} -> stage {stage_x}, {x_kind}[{x_comp}]"
+                    )
+                    print(f"🔍 NLP dbg values: x0[{col}]={x0_val}, g0[{row}]={g0_val}")
+
+                # Report first failing objective gradient entry
+                bad_grad = np.argwhere(~np.isfinite(grad_f0))
+                if bad_grad.size > 0:
+                    c = int(bad_grad[0, 0])
+                    gv = grad_f0[c]
+                    block_x = self.n_state + self.n_control
+                    stage_x = c // block_x
+                    off_x = c % block_x
+                    if off_x < self.n_state:
+                        x_kind = 'state'
+                        x_comp = off_x
+                    else:
+                        x_kind = 'control'
+                        x_comp = off_x - self.n_state
+                    x0_val = float(np.array(x0_dm).reshape(-1)[c])
+                    print(
+                        f"🔍 NLP dbg: first bad grad_f at col={c}, value={gv}, "
+                        f"stage={stage_x}, {x_kind}[{x_comp}], x0={x0_val}"
+                    )
+
+            except Exception as exc:
+                print(f"🔍 NLP dbg: pre-solve evaluation failed with error: {exc}")
         # Solve the NLP
         assert len(lbw) == self.n_state * (horizon+1) + self.n_control * (horizon)
         assert len(ubw) == self.n_state * (horizon+1) + self.n_control * (horizon)

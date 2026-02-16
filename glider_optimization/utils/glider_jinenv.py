@@ -15,7 +15,19 @@ class GliderPerching :
     def __init__(self, config: Config, project_name='glider-perching'):
         self.project_name = project_name
         self.config = config
-
+        
+        # \ud83d\udd0d Diagnostic flags (can be set externally for testing)
+        self._diag_cheb_basis = False  # Enable Chebyshev basis logging
+        self._clamp_coeffs = True      # Enable coefficient clamping to prevent extreme forces
+        self._debug_dynamics = False   # Enable dynamics evaluation logging
+        
+        # 🧪 REGULARIZATION PARAMETERS FOR TESTING
+        # All disabled for deep investigation - use defaults
+        # Uncomment ONE to test different configurations:
+        # self._velocity_floor = 0.5     # Test: Higher velocity floor (default 0.1)
+        # self._velocity_floor = 1.0     # Test: Much higher velocity floor
+        # self._symbolic_epsilon = 1e-4  # Test: Larger epsilon (default 1e-6)
+        # self._symbolic_epsilon = 1e-3  # Test: Much larger epsilon
     def C_L(self, alpha):
         return 2 * sin(alpha) * cos(alpha)
 
@@ -177,10 +189,26 @@ class GliderPerching :
             z_wdot = zdot - l_w_m * thetadot * cos(theta)
             x_edot = xdot + l * thetadot * sin(theta) + l_e * (thetadot + phidot) * sin(theta + phi)
             z_edot = zdot - l * thetadot * cos(theta) - l_e * (thetadot + phidot) * cos(theta + phi)
-        v_w = sqrt(x_wdot * x_wdot + z_wdot * z_wdot + 1e-8) # flow/air speed
         
-        alpha_w = theta - atan2(z_wdot, x_wdot)
-        Re = rho * v_w * chord / mu_air
+        # 🔍 SYMBOLIC EPSILON: Add small constant to denominators to prevent NaN in gradients
+        eps = getattr(self, '_symbolic_epsilon', 1e-6)  # Epsilon in symbolic expressions
+        
+        # Velocity with symbolic epsilon (prevents sqrt derivative singularity)
+        v_w = sqrt(x_wdot * x_wdot + z_wdot * z_wdot + eps*eps) # flow/air speed
+        
+        # 🔍 DIAGNOSTIC: Configurable velocity floor for testing
+        v_min = getattr(self, '_velocity_floor', 0.1)  # Default 0.1 m/s
+        v_w_safe = fmax(v_w, v_min)  # Prevent division by zero
+        
+        # Angle of attack with symbolic epsilon (prevents atan2 derivative singularity)
+        alpha_w = theta - atan2(z_wdot, x_wdot + eps)
+        Re = rho * v_w_safe * chord / mu_air
+        
+        # 🔍 DIAGNOSTIC: Log state variables if debug enabled
+        if hasattr(self, '_debug_dynamics') and self._debug_dynamics:
+            if not isinstance(x, SX):
+                print(f"🔍 State: x={float(x):.3f}, z={float(z):.3f}, theta={float(theta):.3f}°, phi={float(phi):.3f}°, "
+                      f"xdot={float(xdot):.3f}, zdot={float(zdot):.3f}, thetadot={float(thetadot):.3f}")
         
         #nfConfig = self.config.neuralFoilSampling
         
@@ -197,20 +225,48 @@ class GliderPerching :
         
         X = self.cheb_basis_2d(alpha_scaled_clamped, Re_scaled_clamped, chebyshev_deg)
 
+        # 🔍 DIAGNOSTIC: Check Chebyshev basis for extreme values
+        # Chebyshev recursion T_n = 2*x*T_{n-1} - T_{n-2} can explode for large x or high degree
+        # Even with clamping to [-1,1], numerical errors can accumulate
+        if hasattr(self, '_diag_cheb_basis') and self._diag_cheb_basis:
+            X_vals = [float(X[i]) if isinstance(X[i], (int, float)) else None for i in range(min(10, X.size1()))]
+            print(f"🔍 Wing Chebyshev basis (first 10): {X_vals}")
+            print(f"🔍 Wing alpha_w={float(alpha_w) if not isinstance(alpha_w, SX) else 'SX'}, "
+                  f"alpha_scaled={float(alpha_scaled) if not isinstance(alpha_scaled, SX) else 'SX'}, "
+                  f"v_w={'SX' if isinstance(v_w, SX) else float(v_w)}, Re={'SX' if isinstance(Re, SX) else float(Re)}")
+
         CL_w = w*dot(X, phi_CL) + (1-w)*self.C_L(alpha_w)
         CD_w = w*dot(X, phi_CD) + (1-w)*self.C_D(alpha_w)
         CM_w = w*dot(X, phi_CM) + (1-w)*self.C_M(alpha_w)
         
+        # 🔍 DIAGNOSTIC: Log wing coefficients if debug enabled
+        if hasattr(self, '_debug_dynamics') and self._debug_dynamics:
+            # Only log if values are numeric (not symbolic)
+            if not isinstance(CL_w, SX):
+                print(f"🔍 Wing: alpha_w={float(alpha_w):.3f}°, v_w={float(v_w):.3f}, Re={float(Re):.1f}, "
+                      f"CL={float(CL_w):.4f}, CD={float(CD_w):.4f}, CM={float(CM_w):.4f}")
+        
+        # 🔍 DIAGNOSTIC: Optional CL/CD/CM clamping to prevent extreme forces
+        if hasattr(self, '_clamp_coeffs') and self._clamp_coeffs:
+            CL_max = 2.5  # Restored to original (0.8 clamping didn't help)
+            CD_max = 2.0
+            CL_w = fmax(-CL_max, fmin(CL_max, CL_w))
+            CD_w = fmax(0.0, fmin(CD_max, CD_w))  # CD must be positive
+            CM_w = fmax(-1.0, fmin(1.0, CM_w))
+        
         # force vectors for aerodynamic surfaces (lift, drag, gravity)
         F_Lw = CL_w * vertcat(-z_wdot, x_wdot)  # lift force vector (proportional to)
         F_Dw = CD_w * vertcat(-x_wdot, -z_wdot) # drag force vector (proportional to)
-        F_w = 0.5 * rho * v_w * S_w * (F_Lw + F_Dw)
-        M_w = 0.5 * rho * v_w**2 * S_w * chord * CM_w
+        F_w = 0.5 * rho * v_w_safe * S_w * (F_Lw + F_Dw)  # Use safeguarded velocity
+        M_w = 0.5 * rho * v_w_safe**2 * S_w * chord * CM_w
 
-        alpha_e = theta + phi - atan2(z_edot, x_edot)
-        v_e = sqrt(x_edot * x_edot + z_edot * z_edot + 1e-8)   # flow/air speed
+        # Elevator velocity and angle with symbolic epsilon
+        v_e = sqrt(x_edot * x_edot + z_edot * z_edot + eps*eps)   # flow/air speed
+        v_e_safe = fmax(v_e, v_min)  # Use same configurable floor as v_w
+        alpha_e = theta + phi - atan2(z_edot, x_edot + eps)
+        q_e = 0.5 * rho * v_e_safe**2
 
-        Re_e = rho * v_e * chord / mu_air
+        Re_e = rho * v_e_safe * chord / mu_air
 
         # Elevator coefficients: default analytic model; in 3D mode, use the
         # fixed-elevator Chebyshev surrogate inside the same envelope.
@@ -222,9 +278,28 @@ class GliderPerching :
             Re_e_scaled_clamped = fmax(-1.0, fmin(1.0, Re_e_scaled))
             X_e = self.cheb_basis_2d(alpha_e_scaled_clamped, Re_e_scaled_clamped, chebyshev_deg)
 
+            # 🔍 DIAGNOSTIC: Check elevator Chebyshev basis
+            if hasattr(self, '_diag_cheb_basis') and self._diag_cheb_basis:
+                X_e_vals = [float(X_e[i]) if isinstance(X_e[i], (int, float)) else None for i in range(min(10, X_e.size1()))]
+                print(f"🔍 Elevator Chebyshev basis (first 10): {X_e_vals}")
+                print(f"🔍 Elevator alpha_e={'SX' if isinstance(alpha_e, SX) else float(alpha_e)}, "
+                      f"v_e={'SX' if isinstance(v_e, SX) else float(v_e)}, Re_e={'SX' if isinstance(Re_e, SX) else float(Re_e)}")
+
             CL_e = w_e * dot(X_e, phi_CL_e) + (1 - w_e) * self.C_L(alpha_e)
             CD_e = w_e * dot(X_e, phi_CD_e) + (1 - w_e) * self.C_D(alpha_e)
             CM_e = w_e * dot(X_e, phi_CM_e) + (1 - w_e) * self.C_M(alpha_e)
+            
+            # 🔍 DIAGNOSTIC: Log elevator coefficients if debug enabled
+            if hasattr(self, '_debug_dynamics') and self._debug_dynamics:
+                if not isinstance(CL_e, SX):
+                    print(f"🔍 Elevator: alpha_e={float(alpha_e):.3f}°, v_e={float(v_e):.3f}, Re_e={float(Re_e):.1f}, "
+                          f"CL={float(CL_e):.4f}, CD={float(CD_e):.4f}, CM={float(CM_e):.4f}")
+            
+            # 🔍 DIAGNOSTIC: Optional elevator coefficient clamping
+            if hasattr(self, '_clamp_coeffs') and self._clamp_coeffs:
+                CL_e = fmax(-0.8, fmin(0.8, CL_e))  # Match 2D territory
+                CD_e = fmax(0.0, fmin(2.0, CD_e))
+                CM_e = fmax(-1.0, fmin(1.0, CM_e))
         else:
             CL_e = self.C_L(alpha_e)
             CD_e = self.C_D(alpha_e)
@@ -234,9 +309,9 @@ class GliderPerching :
         F_Le = CL_e * vertcat(-z_edot, x_edot)
         #F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)   # drag force vector (proportional to)
         F_De = CD_e * vertcat(-x_edot, -z_edot)
-        F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
+        F_e = 0.5 * rho * v_e_safe * S_e * (F_Le + F_De)  # Use safeguarded velocity
         #M_e = 0.5 * rho * v_e**2 * S_e * chord * self.C_M(alpha_e)
-        M_e = 0.5 * rho * v_e**2 * S_e * chord * CM_e
+        M_e = 0.5 * rho * v_e_safe**2 * S_e * chord * CM_e
 
         # compute torques with respect to fixed reference point induced by forces
         # moment arms (vector from reference point of state to wing/elevator/fuselage)
@@ -254,8 +329,15 @@ class GliderPerching :
             r_e_z = r_e_bx * sin(theta) + r_e_bz * cos(theta)
 
             # torque about y: tau = r_x*F_z - r_z*F_x
-            τ_w = r_w_x * F_w[1] - r_w_z * F_w[0] + M_w
-            τ_e = r_e_x * F_e[1] - r_e_z * F_e[0] + M_e
+            tau_w_term_rxfz = r_w_x * F_w[1]
+            tau_w_term_rzfx = -r_w_z * F_w[0]
+            tau_w_term_M = M_w
+            τ_w = tau_w_term_rxfz + tau_w_term_rzfx + tau_w_term_M
+
+            tau_e_term_rxfz = r_e_x * F_e[1]
+            tau_e_term_rzfx = -r_e_z * F_e[0]
+            tau_e_term_M = M_e
+            τ_e = tau_e_term_rxfz + tau_e_term_rzfx + tau_e_term_M
             thetaddot = -1. / I * (τ_w + τ_e)
 
         else:
@@ -263,13 +345,47 @@ class GliderPerching :
             r_w = [ (- com_w + com_a) * cos(theta), (- com_w + com_a) * sin(theta) ]
             r_e = [ (- com_e + com_a) * cos(theta), (- com_e + com_a) * sin(theta)]
 
-            τ_w = r_w[1] * F_w[0] - r_w[0] * F_w[1] + M_w
-            τ_e = r_e[1] * F_e[0] - r_e[0] * F_e[1] + M_e
+            # Diagnostics compatibility with 3D variable names
+            r_e_x = r_e[0]
+            r_e_z = r_e[1]
+
+            tau_w_term_rxfz = -r_w[0] * F_w[1]
+            tau_w_term_rzfx = r_w[1] * F_w[0]
+            tau_w_term_M = M_w
+            τ_w = tau_w_term_rxfz + tau_w_term_rzfx + tau_w_term_M
+
+            tau_e_term_rxfz = -r_e[0] * F_e[1]
+            tau_e_term_rzfx = r_e[1] * F_e[0]
+            tau_e_term_M = M_e
+            τ_e = tau_e_term_rxfz + tau_e_term_rzfx + tau_e_term_M
             thetaddot = -1. / I * (τ_w + τ_e)
 
         # linear accelerations (F = ma)
         xddot = 1. / m * (F_w[0] + F_e[0])
         zddot = 1. / m * (F_w[1] + F_e[1]) - g
+
+        # Optional diagnostics: expose intermediate terms for rollout debugging
+        self.dyn_terms = vertcat(
+            x_wdot, z_wdot, v_w_safe, alpha_w, Re, CL_w, CD_w, CM_w,
+            F_w[0], F_w[1], M_w,
+            r_e_x, r_e_z,
+            x_edot, z_edot, v_e_safe, q_e, alpha_e, Re_e, CL_e, CD_e, CM_e,
+            F_e[0], F_e[1], M_e,
+            τ_w, τ_e,
+            tau_e_term_rxfz, tau_e_term_rzfx, tau_e_term_M,
+            xddot, zddot, thetaddot,
+        )
+        self.dyn_term_names = [
+            "x_wdot", "z_wdot", "v_w_safe", "alpha_w", "Re", "CL_w", "CD_w", "CM_w",
+            "F_wx", "F_wz", "M_w",
+            "r_e_x", "r_e_z",
+            "x_edot", "z_edot", "v_e_safe", "q_e", "alpha_e", "Re_e", "CL_e", "CD_e", "CM_e",
+            "F_ex", "F_ez", "M_e",
+            "tau_w", "tau_e",
+            "tau_e_term_rxfz", "tau_e_term_rzfx", "tau_e_term_M",
+            "xddot", "zddot", "thetaddot",
+        ]
+        self.dyn_terms_fn = Function("dyn_terms", [self.X, self.U, self.dyn_auxvar], [self.dyn_terms])
         
         self.f = vertcat(xdot, zdot, thetadot, phidot, xddot, zddot, thetaddot, 0)
 
