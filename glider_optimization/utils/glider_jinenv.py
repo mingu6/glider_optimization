@@ -18,7 +18,7 @@ class GliderPerching :
         
         # \ud83d\udd0d Diagnostic flags (can be set externally for testing)
         self._diag_cheb_basis = False  # Enable Chebyshev basis logging
-        self._clamp_coeffs = True      # Enable coefficient clamping to prevent extreme forces
+        self._clamp_coeffs = False     # Disable coefficient clamping to preserve raw aerodynamics
         self._debug_dynamics = False   # Enable dynamics evaluation logging
         
         # 🧪 REGULARIZATION PARAMETERS FOR TESTING
@@ -67,7 +67,7 @@ class GliderPerching :
         m = 0.065
         l_w_i = -0.005                                # vector to leading edge from total body center of mass
         l_w_f = -0.015                                # vector to trailing edge from total body center of mass
-        l = 0.26                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
+        l = 0.26+0.114125                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
         l_e = 0.02                                    # distance from the hinge to the mean aerodynamic chord of the elevator
         rho = 1.225                                   # assume Standard sea-level air density
         m_f = 0.4 * m                                 # mass of fuselage
@@ -86,6 +86,7 @@ class GliderPerching :
         #parameter = [phi_CL, phi_CD, phi_CM]
 
         nfConfig = self.config.neuralFoilSampling
+        use_elevator_cm_from_lift_2d = bool(getattr(nfConfig, "elevator_cm_from_lift_2d", False))
 
         # In 3D mode we optionally add a separate (fixed) elevator surrogate.
         if getattr(nfConfig, "use_3d_llt", False):
@@ -146,7 +147,8 @@ class GliderPerching :
 
                 # Elevator centroid
                 if "elevator_x" in cent:
-                    com_e_x = float(cent["elevator_x"])
+                    # Keep 2D-style hinge offset convention: com_e_x = l + local elevator centroid x
+                    com_e_x = float(l + cent["elevator_x"])
                 if "elevator_z" in cent:
                     com_e_z = float(cent["elevator_z"])
 
@@ -287,7 +289,11 @@ class GliderPerching :
 
             CL_e = w_e * dot(X_e, phi_CL_e) + (1 - w_e) * self.C_L(alpha_e)
             CD_e = w_e * dot(X_e, phi_CD_e) + (1 - w_e) * self.C_D(alpha_e)
-            CM_e = w_e * dot(X_e, phi_CM_e) + (1 - w_e) * self.C_M(alpha_e)
+            if use_elevator_cm_from_lift_2d:
+                # Hybrid mode: preserve 3D CL/CD surrogate while forcing 2D-style algebraic moment law.
+                CM_e = -0.25 * CL_e
+            else:
+                CM_e = w_e * dot(X_e, phi_CM_e) + (1 - w_e) * self.C_M(alpha_e)
             
             # 🔍 DIAGNOSTIC: Log elevator coefficients if debug enabled
             if hasattr(self, '_debug_dynamics') and self._debug_dynamics:
@@ -328,14 +334,15 @@ class GliderPerching :
             r_e_x = r_e_bx * cos(theta) - r_e_bz * sin(theta)
             r_e_z = r_e_bx * sin(theta) + r_e_bz * cos(theta)
 
-            # torque about y: tau = r_x*F_z - r_z*F_x
-            tau_w_term_rxfz = r_w_x * F_w[1]
-            tau_w_term_rzfx = -r_w_z * F_w[0]
+            # Use same sign convention as 2D path for consistency:
+            # tau = -r_x*F_z + r_z*F_x + M
+            tau_w_term_rxfz = -r_w_x * F_w[1]
+            tau_w_term_rzfx = r_w_z * F_w[0]
             tau_w_term_M = M_w
             τ_w = tau_w_term_rxfz + tau_w_term_rzfx + tau_w_term_M
 
-            tau_e_term_rxfz = r_e_x * F_e[1]
-            tau_e_term_rzfx = -r_e_z * F_e[0]
+            tau_e_term_rxfz = -r_e_x * F_e[1]
+            tau_e_term_rzfx = r_e_z * F_e[0]
             tau_e_term_M = M_e
             τ_e = tau_e_term_rxfz + tau_e_term_rzfx + tau_e_term_M
             thetaddot = -1. / I * (τ_w + τ_e)

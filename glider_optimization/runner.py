@@ -76,6 +76,9 @@ class Runner:
         for block_name, block in self.blocks.items():
             self.logger.debug(f"Forward block {block_name}")
             data = block.forward(data)
+            # Pass NeuralFoilSampling block reference for 3D LLT artifact export
+            if block_name == "NeuralFoilSampling":
+                data["_neuralfoil_block_ref"] = block
         
         self.logger.debug("Outer loop forward pass completed")
 

@@ -1,0 +1,338 @@
+{
+  "timestamp": "20260217_163210",
+  "export_dir": "artifacts/3d_llt_export/20260217_163210",
+  "wing_geometry": {
+    "dy": {
+      "filename": "wing_dy.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "y_mid": {
+      "filename": "wing_y_mid.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "c_mid": {
+      "filename": "wing_c_mid.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "twist_mid": {
+      "filename": "wing_twist_mid.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "S": {
+      "filename": "wing_S.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "cbar": {
+      "filename": "wing_cbar.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "x_c4_mid": {
+      "filename": "wing_x_c4_mid.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "span": {
+      "filename": "wing_span.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "D_nf": {
+      "filename": "wing_D_nf.npy",
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "float32"
+    },
+    "D_tr": {
+      "filename": "wing_D_tr.npy",
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "float32"
+    },
+    "mirror_of": {
+      "filename": "wing_mirror_of.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "int64"
+    },
+    "eta": {
+      "filename": "wing_eta.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    }
+  },
+  "wing_chebyshev": {
+    "phi_CL": {
+      "filename": "wing_cheby_phi_CL.npy",
+      "shape": [
+        676,
+        1
+      ],
+      "dtype": "float32"
+    },
+    "phi_CD": {
+      "filename": "wing_cheby_phi_CD.npy",
+      "shape": [
+        676,
+        1
+      ],
+      "dtype": "float32"
+    },
+    "phi_CM": {
+      "filename": "wing_cheby_phi_CM.npy",
+      "shape": [
+        676,
+        1
+      ],
+      "dtype": "float32"
+    }
+  },
+  "wing_raw_llt": {
+    "CL": {
+      "filename": "wing_raw_CL.npy",
+      "shape": [
+        1024
+      ],
+      "dtype": "float32"
+    },
+    "CD": {
+      "filename": "wing_raw_CD.npy",
+      "shape": [
+        1024
+      ],
+      "dtype": "float32"
+    },
+    "CM": {
+      "filename": "wing_raw_CM.npy",
+      "shape": [
+        1024
+      ],
+      "dtype": "float32"
+    },
+    "alpha_grid": {
+      "filename": "sampling_alpha_grid.npy",
+      "shape": [
+        1024
+      ],
+      "dtype": "float32"
+    },
+    "Re_grid": {
+      "filename": "sampling_Re_grid.npy",
+      "shape": [
+        1024
+      ],
+      "dtype": "float32"
+    }
+  },
+  "flow_properties": {
+    "rho": {
+      "filename": "flow_rho.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "mu": {
+      "filename": "flow_mu.npy",
+      "shape": [],
+      "dtype": "float32"
+    }
+  },
+  "solver_parameters": {
+    "beta": {
+      "filename": "solver_beta.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "tol": {
+      "filename": "solver_tol.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "n_iter": {
+      "filename": "solver_n_iter.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "max_iter": {
+      "filename": "solver_max_iter.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "enforce_symmetry": {
+      "filename": "solver_enforce_symmetry.npy",
+      "shape": [],
+      "dtype": "float32"
+    }
+  },
+  "elevator": {
+    "dy": {
+      "filename": "elevator_dy.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "y_mid": {
+      "filename": "elevator_y_mid.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "c_mid": {
+      "filename": "elevator_c_mid.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "twist_mid": {
+      "filename": "elevator_twist_mid.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "S": {
+      "filename": "elevator_S.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "cbar": {
+      "filename": "elevator_cbar.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "x_c4_mid": {
+      "filename": "elevator_x_c4_mid.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "float32"
+    },
+    "span": {
+      "filename": "elevator_span.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "D_nf": {
+      "filename": "elevator_D_nf.npy",
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "float32"
+    },
+    "D_tr": {
+      "filename": "elevator_D_tr.npy",
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "float32"
+    },
+    "mirror_of": {
+      "filename": "elevator_mirror_of.npy",
+      "shape": [
+        2
+      ],
+      "dtype": "int64"
+    },
+    "upper_weights": {
+      "filename": "elevator_kulfan_upper_weights.npy",
+      "shape": [
+        8
+      ],
+      "dtype": "float32"
+    },
+    "lower_weights": {
+      "filename": "elevator_kulfan_lower_weights.npy",
+      "shape": [
+        8
+      ],
+      "dtype": "float32"
+    },
+    "LE_weight": {
+      "filename": "elevator_kulfan_LE_weight.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "TE_thickness": {
+      "filename": "elevator_kulfan_TE_thickness.npy",
+      "shape": [],
+      "dtype": "float32"
+    },
+    "phi_CL": {
+      "filename": "elevator_cheby_phi_CL.npy",
+      "shape": [
+        676,
+        1
+      ],
+      "dtype": "float32"
+    },
+    "phi_CD": {
+      "filename": "elevator_cheby_phi_CD.npy",
+      "shape": [
+        676,
+        1
+      ],
+      "dtype": "float32"
+    },
+    "phi_CM": {
+      "filename": "elevator_cheby_phi_CM.npy",
+      "shape": [
+        676,
+        1
+      ],
+      "dtype": "float32"
+    },
+    "CL": {
+      "filename": "elevator_raw_CL.npy",
+      "shape": [
+        1024
+      ],
+      "dtype": "float32"
+    },
+    "CD": {
+      "filename": "elevator_raw_CD.npy",
+      "shape": [
+        1024
+      ],
+      "dtype": "float32"
+    },
+    "CM": {
+      "filename": "elevator_raw_CM.npy",
+      "shape": [
+        1024
+      ],
+      "dtype": "float32"
+    }
+  },
+  "usage_instructions": {
+    "loading": "Use np.load('filename.npy') to load individual arrays",
+    "allow_pickle": "Set allow_pickle=True if loading complex objects",
+    "coordinate_system": "Right-handed, y+ is starboard/right wing",
+    "units": "SI units (meters, kg, Pa, etc.)"
+  }
+}

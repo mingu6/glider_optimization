@@ -91,20 +91,21 @@ class NeuralFoilSamplingConfig(BaseModel):
 
     # Optional: upgrade 2D sampling to 3D LLT
     use_3d_llt: bool = False
+    use_3d_llt_wing: bool | None = None
+    use_3d_llt_elevator: bool | None = None
+    # Hybrid option: keep elevator CL/CD from 3D LLT, force CM to 2D algebraic law CM=-0.25*CL
+    elevator_cm_from_lift_2d: bool = False
+    load_wing_artifacts: str | None = None
 
     # Path to aero_rom checkpoint (contains wing geometry + flow used to invert Re -> V)
     llt_ckpt_path: str = "aero_rom/artifacts/models/3d_blocks.pt"
 
     # Optional overrides (if None, fall back to checkpoint values)
     llt_n_iter: int | None = None
-    llt_max_iter: int | None = None  # Maximum iterations for adaptive convergence
+    llt_max_iter: int | None = None
     llt_beta: float | None = None
     llt_tol: float | None = None
     llt_enforce_symmetry: bool | None = None
-    
-    # Backward pass mode: "implicit" (fast), "explicit" (robust), or "hybrid" (auto-fallback)
-    llt_backward_mode: str = "hybrid"
-    llt_fallback_residual_threshold: float = 1e-4  # Residual threshold to trigger explicit fallback
 
     # cuNF size used inside LLT (defaults to neuralFoil_size)
     llt_model_size: str | None = None

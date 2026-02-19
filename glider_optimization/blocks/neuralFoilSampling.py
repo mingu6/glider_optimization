@@ -54,12 +54,12 @@ class NeuralFoilSampling(Block):
         
         self.min_avg_Cl_Cd = nfConfig.min_avg_Cl_Cd
         self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
-        self.use_3d_llt = bool(getattr(nfConfig, "use_3d_llt", False))
         
-        # 🔍 DIAGNOSTIC: Log which mode we're using
-        self.logger.info(f"{'='*80}")
-        self.logger.info(f"🔧 NeuralFoilSampling MODE: {'3D LLT' if self.use_3d_llt else '2D NeuralFoil'}")
-        self.logger.info(f"{'='*80}")
+        # Independent wing/elevator 3D LLT control
+        self.use_3d_llt_wing = bool(getattr(nfConfig, "use_3d_llt_wing", getattr(nfConfig, "use_3d_llt", False)))
+        self.use_3d_llt_elevator = bool(getattr(nfConfig, "use_3d_llt_elevator", getattr(nfConfig, "use_3d_llt", False)))
+        self.elevator_cm_from_lift_2d = bool(getattr(nfConfig, "elevator_cm_from_lift_2d", False))
+        self.use_3d_llt = self.use_3d_llt_wing or self.use_3d_llt_elevator
 
         # Elevator geometry treated as fixed for now (not optimized). In 3D mode we
         # compute its coefficients once and cache them.
@@ -73,7 +73,7 @@ class NeuralFoilSampling(Block):
                     "Ensure glider_optimization/aero_rom is on PYTHONPATH and deps are installed."
                 )
 
-            ckpt_path = getattr(nfConfig, "llt_ckpt_path", "aero_rom/artifacts/models/3d_blocks.pt")
+            ckpt_path = getattr(nfConfig, "llt_ckpt_path", "artifacts/models/3d_blocks.pt")
             ckpt = torch.load(ckpt_path, map_location=self.device)
             flow = ckpt.get("flow", {})
             wing = ckpt.get("wing_geometry", {})
@@ -120,7 +120,7 @@ class NeuralFoilSampling(Block):
             beta = float(beta_ov) if beta_ov is not None else float(ckpt.get("beta", 0.40))
             tol = float(tol_ov) if tol_ov is not None else float(ckpt.get("tol", 1e-6))
             n_iter = int(n_iter_ov) if n_iter_ov is not None else int(ckpt.get("n_iter", 15))
-            max_iter = int(max_iter_ov) if max_iter_ov is not None else n_iter
+            max_iter = int(max_iter_ov) if max_iter_ov is not None else int(ckpt.get("max_iter", 200))
             enforce_sym = bool(enforce_sym_ov) if enforce_sym_ov is not None else bool(ckpt.get("enforce_symmetry", True))
 
             self._llt_beta_t = torch.tensor(beta, dtype=torch.float32, device=self.device)
@@ -250,6 +250,13 @@ class NeuralFoilSampling(Block):
         )
         return {"CL_e": C[:, 0], "CD_e": C[:, 1], "CM_e": C[:, 2]}
 
+    def _apply_elevator_cm_hybrid(self, coeffs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Optionally force elevator CM to 2D algebraic law based on lift: CM = -0.25 * CL."""
+        if self.elevator_cm_from_lift_2d and ("CL_e" in coeffs):
+            coeffs = dict(coeffs)
+            coeffs["CM_e"] = -0.25 * coeffs["CL_e"]
+        return coeffs
+
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         B = self.alpha_batch.shape[0]
@@ -262,8 +269,8 @@ class NeuralFoilSampling(Block):
             "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B),
             "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B),
         }
-        if self.use_3d_llt:
-            # 3D LLT coefficients (differentiable)
+        if self.use_3d_llt_wing:
+            # 3D LLT wing coefficients (differentiable)
             if (
                 "upper_weights_tip" in downstream_info
                 and "lower_weights_tip" in downstream_info
@@ -291,26 +298,6 @@ class NeuralFoilSampling(Block):
                     self.alpha_batch,
                     self.Re_batch,
                 )
-            
-            # 🔍 CSV EXPORT: Export raw 3D LLT outputs once for user inspection
-            if not hasattr(self, '_llt_csv_exported'):
-                try:
-                    import pandas as pd
-                    import os
-                    os.makedirs("diagnostics/2026-02-13_3d-llt-debug", exist_ok=True)
-                    csv_data = pd.DataFrame({
-                        'alpha_deg': self.alpha_batch.detach().cpu().numpy().flatten(),
-                        'Re': self.Re_batch.detach().cpu().numpy().flatten(),
-                        'CL': self._last_aero_coeff['CL'].detach().cpu().numpy().flatten(),
-                        'CD': self._last_aero_coeff['CD'].detach().cpu().numpy().flatten(),
-                        'CM': self._last_aero_coeff['CM'].detach().cpu().numpy().flatten()
-                    })
-                    csv_path = "diagnostics/2026-02-13_3d-llt-debug/llt_3d_wing_raw_outputs.csv"
-                    csv_data.to_csv(csv_path, index=False)
-                    self.logger.info(f"✅ Exported 3D LLT raw outputs to {csv_path}")
-                    self._llt_csv_exported = True
-                except Exception as e:
-                    self.logger.warning(f"Failed to export 3D LLT CSV: {e}")
 
             conf2d = get_aero_from_kulfan_parameters_cuda(
                 kulfan_batch,
@@ -322,11 +309,12 @@ class NeuralFoilSampling(Block):
             self._last_aero_coeff["analysis_confidence"] = conf2d
 
             # Fixed-elevator 3D coefficients: compute once and cache (no gradient needed).
-            if hasattr(self, "_e_llt_cbar") and (not self._elevator_cached):
+            if self.use_3d_llt_elevator and hasattr(self, "_e_llt_cbar") and (not self._elevator_cached):
                 with torch.no_grad():
                     self._elevator_aero_cached = self._eval_3d_llt_elevator_fixed(
                         self.alpha_batch, self.Re_batch
                     )
+                    self._elevator_aero_cached = self._apply_elevator_cm_hybrid(self._elevator_aero_cached)
                     # detach so it is safe to reuse
                     self._elevator_aero_cached = {k: v.detach() for k, v in self._elevator_aero_cached.items()}
                 self._elevator_cached = True
@@ -339,27 +327,16 @@ class NeuralFoilSampling(Block):
                 device=self.device,
                 model_size=self.config.neuralFoilSampling.neuralFoil_size,
             )
-            
-            # 🔍 CSV EXPORT: Export raw 2D NeuralFoil outputs once for comparison
-            if not hasattr(self, '_nf_csv_exported'):
-                try:
-                    import pandas as pd
-                    import os
-                    os.makedirs("diagnostics/2026-02-13_3d-llt-debug", exist_ok=True)
-                    csv_data = pd.DataFrame({
-                        'alpha_deg': self.alpha_batch.detach().cpu().numpy().flatten(),
-                        'Re': self.Re_batch.detach().cpu().numpy().flatten(),
-                        'CL': self._last_aero_coeff['CL'].detach().cpu().numpy().flatten(),
-                        'CD': self._last_aero_coeff['CD'].detach().cpu().numpy().flatten(),
-                        'CM': self._last_aero_coeff['CM'].detach().cpu().numpy().flatten()
-                    })
-                    csv_path = "diagnostics/2026-02-13_3d-llt-debug/neuralfoil_2d_raw_outputs.csv"
-                    csv_data.to_csv(csv_path, index=False)
-                    self.logger.info(f"✅ Exported 2D NeuralFoil raw outputs to {csv_path}")
-                    self._nf_csv_exported = True
-                except Exception as e:
-                    self.logger.warning(f"Failed to export 2D NeuralFoil CSV: {e}")
-                    
+
+            # Elevator-only 3D mode: compute fixed elevator coefficients once.
+            if self.use_3d_llt_elevator and hasattr(self, "_e_llt_cbar") and (not self._elevator_cached):
+                with torch.no_grad():
+                    self._elevator_aero_cached = self._eval_3d_llt_elevator_fixed(
+                        self.alpha_batch, self.Re_batch
+                    )
+                    self._elevator_aero_cached = self._apply_elevator_cm_hybrid(self._elevator_aero_cached)
+                    self._elevator_aero_cached = {k: v.detach() for k, v in self._elevator_aero_cached.items()}
+                self._elevator_cached = True
         conf = self._last_aero_coeff.get("analysis_confidence")
         try:
             conf_mean = float(conf.mean().detach().cpu().item())
@@ -388,7 +365,7 @@ class NeuralFoilSampling(Block):
             "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B_val),
             "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B_val),
         }
-        if self.use_3d_llt:
+        if self.use_3d_llt_wing:
             val_aero = self._eval_3d_llt(
                 downstream_info["upper_weights"],
                 downstream_info["lower_weights"],
@@ -420,8 +397,8 @@ class NeuralFoilSampling(Block):
             "CL": self._last_aero_coeff["CL"].detach(),
             "CD": self._last_aero_coeff["CD"].detach(),
             "CM": self._last_aero_coeff["CM"].detach(),
-            # Optional fixed-elevator outputs (present only when 3D is enabled and elevator geometry exists)
-            **(self._elevator_aero_cached if (self.use_3d_llt and self._elevator_cached and self._elevator_aero_cached is not None) else {}),
+            # Optional fixed-elevator outputs (present only when 3D elevator is enabled and elevator geometry exists)
+            **(self._elevator_aero_cached if (self.use_3d_llt_elevator and self._elevator_cached and self._elevator_aero_cached is not None) else {}),
             "augmented_lagrangian": aug_lagrangian,
             # Validation data
             "val_alpha": self.alpha_val,

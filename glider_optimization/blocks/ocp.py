@@ -166,6 +166,46 @@ class OCP(Block):
             self.logger.info(f"🔍 Exported rollout term CSV to {out_path}")
         except Exception as exc:
             self.logger.warning(f"🔍 CSV export failed: {exc}")
+
+    def _export_rollout_debug_full_csv(self, auxvar_vector: np.ndarray, max_stage: int = 16) -> None:
+        """Export full stage-wise rollout terms (states + all dyn_terms) without overwriting baseline CSV."""
+        try:
+            out_path = Path("diagnostics/2026-02-13_3d-llt-debug/rollout_terms_stage_0_16_full.csv")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+
+            xk = np.array(self.init_state, dtype=float)
+            u0 = [0.5 * (lb + ub) for lb, ub in zip(self.coc.control_lb, self.coc.control_ub)]
+            term_names = getattr(self.env, "dyn_term_names", None)
+            if not term_names or not hasattr(self.env, "dyn_terms_fn"):
+                self.logger.warning("🔍 Full CSV export unavailable: dyn_terms_fn not initialized")
+                return
+
+            state_names = ["x", "z", "theta", "phi", "xdot", "zdot", "thetadot", "t"]
+            columns = ["stage"] + state_names + term_names
+
+            rows = []
+            for stage in range(0, max_stage + 1):
+                terms = np.array(self.env.dyn_terms_fn(xk.tolist(), u0, auxvar_vector)).reshape(-1)
+
+                row = {"stage": int(stage)}
+                for i, name in enumerate(state_names):
+                    row[name] = float(xk[i])
+                for i, name in enumerate(term_names):
+                    row[name] = float(terms[i])
+
+                rows.append(row)
+
+                if stage < max_stage:
+                    xk = np.array(self.coc.dyn_fn(xk.tolist(), u0, auxvar_vector)).reshape(-1)
+
+            with out_path.open("w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(rows)
+
+            self.logger.info(f"🔍 Exported FULL rollout term CSV to {out_path}")
+        except Exception as exc:
+            self.logger.warning(f"🔍 Full CSV export failed: {exc}")
         
         
     @override
@@ -205,6 +245,7 @@ class OCP(Block):
         # 🔍 DEEP INVESTIGATION: Stage-wise term breakdown around observed blow-up
         self._log_rollout_term_breakdown(auxvar_vector, start_stage=10, end_stage=14)
         self._export_rollout_debug_csv(auxvar_vector, max_stage=16)
+        self._export_rollout_debug_full_csv(auxvar_vector, max_stage=16)
         
         # 🔍 DIAGNOSTIC: Optional debug switches (enable when investigating NaN)
         self.coc._debug_init_guess = False

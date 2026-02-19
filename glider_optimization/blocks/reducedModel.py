@@ -4,7 +4,7 @@ from ..config import Config
 from typing import Dict, Any
 import torch
 import logging
-import plotly.graph_objects as go
+import numpy as np
 from pathlib import Path
 
 
@@ -32,6 +32,25 @@ class ReducedModel(Block):
         alpha_scaled = self._scale_to_domain(alpha, nfConfig.AoA_min, nfConfig.AoA_max)
         Re_scaled = self._scale_to_domain(Re, nfConfig.Re_min, nfConfig.Re_max)
 
+        load_wing_artifacts = getattr(nfConfig, "load_wing_artifacts", None)
+        if load_wing_artifacts:
+            if not self._precomputed:
+                self._precompute_chebyshev(alpha_scaled, Re_scaled)
+
+            artifact_dir = Path(load_wing_artifacts)
+            coeffs_CL = torch.from_numpy(np.load(artifact_dir / "wing_cheby_phi_CL.npy")).to(alpha.device, dtype=torch.float32)
+            coeffs_CD = torch.from_numpy(np.load(artifact_dir / "wing_cheby_phi_CD.npy")).to(alpha.device, dtype=torch.float32)
+            coeffs_CM = torch.from_numpy(np.load(artifact_dir / "wing_cheby_phi_CM.npy")).to(alpha.device, dtype=torch.float32)
+
+            aug = downstream_info.get("augmented_lagrangian", 0.0)
+            return {
+                "phi_CL": coeffs_CL,
+                "phi_CD": coeffs_CD,
+                "phi_CM": coeffs_CM,
+                "augmented_lagrangian": aug,
+                "iteration": downstream_info["iteration"]
+            }
+
         if not self._precomputed:
             self._precompute_chebyshev(alpha_scaled, Re_scaled)
 
@@ -42,79 +61,6 @@ class ReducedModel(Block):
         coeffs_CL = self._ridge_solve(CL)
         coeffs_CD = self._ridge_solve(CD)
         coeffs_CM = self._ridge_solve(CM)
-        
-        # 🔍 DIAGNOSTIC: Check coefficients for NaN/Inf
-        if torch.isnan(coeffs_CL).any() or torch.isinf(coeffs_CL).any():
-            self.logger.critical(f"⚠️ NaN/Inf in phi_CL! NaN: {torch.isnan(coeffs_CL).sum()}, Inf: {torch.isinf(coeffs_CL).sum()}")
-        if torch.isnan(coeffs_CD).any() or torch.isinf(coeffs_CD).any():
-            self.logger.critical(f"⚠️ NaN/Inf in phi_CD! NaN: {torch.isnan(coeffs_CD).sum()}, Inf: {torch.isinf(coeffs_CD).sum()}")
-        if torch.isnan(coeffs_CM).any() or torch.isinf(coeffs_CM).any():
-            self.logger.critical(f"⚠️ NaN/Inf in phi_CM! NaN: {torch.isnan(coeffs_CM).sum()}, Inf: {torch.isinf(coeffs_CM).sum()}")
-        
-        self.logger.info(f"🔍 Chebyshev coefficients: phi_CL range=[{coeffs_CL.min().item():.3e}, {coeffs_CL.max().item():.3e}]")
-        self.logger.info(f"🔍 Chebyshev coefficients: phi_CD range=[{coeffs_CD.min().item():.3e}, {coeffs_CD.max().item():.3e}]")
-        self.logger.info(f"🔍 Chebyshev coefficients: phi_CM range=[{coeffs_CM.min().item():.3e}, {coeffs_CM.max().item():.3e}]")
-        
-        # 🔍 DIAGNOSTIC: Plot Chebyshev surfaces and export CSVs
-        iteration = downstream_info.get("iteration", 0)
-        if iteration == 0 or iteration == 1:  # Plot on first iteration (0 or 1 depending on indexing)
-            self.logger.info("📊 Generating Chebyshev surface plots and CSV exports...")
-            try:
-                VV = Re.reshape(-1, 1)
-                AA = alpha.reshape(-1, 1)
-                
-                # Export ground truth (LLT outputs) to CSV
-                import pandas as pd
-                ground_truth_df = pd.DataFrame({
-                    'Re': VV.detach().cpu().numpy().flatten(),
-                    'alpha_deg': AA.detach().cpu().numpy().flatten(),
-                    'CL': CL.detach().cpu().numpy().flatten(),
-                    'CD': CD.detach().cpu().numpy().flatten(),
-                    'CM': CM.detach().cpu().numpy().flatten()
-                })
-                mode_suffix = "3D" if self.config.neuralFoilSampling.use_3d_llt else "2D"
-                gt_path = Path(f'diagnostics/2026-02-13_3d-llt-debug/chebyshev_ground_truth_{mode_suffix}.csv')
-                gt_path.parent.mkdir(parents=True, exist_ok=True)
-                ground_truth_df.to_csv(gt_path, index=False)
-                self.logger.info(f"📊 Exported ground truth to {gt_path}")
-                
-                # Generate and export Chebyshev fitted surface on a grid
-                n_grid = 100
-                re_range = torch.linspace(float(VV.min()), float(VV.max()), n_grid, device=coeffs_CL.device)
-                aa_range = torch.linspace(float(AA.min()), float(AA.max()), n_grid, device=coeffs_CL.device)
-                RE_grid, AA_grid = torch.meshgrid(re_range, aa_range, indexing='xy')
-                
-                nfConfig = self.config.neuralFoilSampling
-                RE_flat = RE_grid.reshape(-1)
-                AA_flat = AA_grid.reshape(-1)
-                RE_scaled = self._scale_to_domain(RE_flat, nfConfig.Re_min, nfConfig.Re_max)
-                AA_scaled = self._scale_to_domain(AA_flat, nfConfig.AoA_min, nfConfig.AoA_max)
-                X_grid = self._chebyshev_basis(AA_scaled, RE_scaled)
-                
-                CL_fit = (X_grid @ coeffs_CL).detach().cpu().numpy()
-                CD_fit = (X_grid @ coeffs_CD).detach().cpu().numpy()
-                CM_fit = (X_grid @ coeffs_CM).detach().cpu().numpy()
-                
-                fitted_df = pd.DataFrame({
-                    'Re': RE_flat.detach().cpu().numpy(),
-                    'alpha_deg': AA_flat.detach().cpu().numpy(),
-                    'CL_fit': CL_fit.flatten(),
-                    'CD_fit': CD_fit.flatten(),
-                    'CM_fit': CM_fit.flatten()
-                })
-                fit_path = Path(f'diagnostics/2026-02-13_3d-llt-debug/chebyshev_fitted_surface_{mode_suffix}.csv')
-                fitted_df.to_csv(fit_path, index=False)
-                self.logger.info(f"📊 Exported Chebyshev fit ({n_grid}x{n_grid} grid) to {fit_path}")
-                
-                # Generate plots
-                self.plot(CL, VV, AA, coeffs_CL, "Lift Coefficient", "CL", iteration)
-                self.plot(CD, VV, AA, coeffs_CD, "Drag Coefficient", "CD", iteration)
-                self.plot(CM, VV, AA, coeffs_CM, "Moment Coefficient", "CM", iteration)
-                self.logger.info("✓ Chebyshev plots saved successfully")
-            except Exception as e:
-                import traceback
-                self.logger.error(f"Failed to generate plots: {e}")
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
 
         # Optional fixed-elevator surrogate (computed once in NeuralFoilSampling in 3D mode)
         if "CL_e" in downstream_info and "CD_e" in downstream_info and "CM_e" in downstream_info:
@@ -164,9 +110,6 @@ class ReducedModel(Block):
     def _scale_to_domain(self, x, min_val, max_val):
         mask = ~((x <= max_val) & (x >= min_val))
         if mask.any():
-            # 🔍 DIAGNOSTIC: Log out-of-bounds values (extrapolation)
-            self.logger.warning(f"⚠️ Out-of-bounds values detected! Count: {mask.sum()}")
-            self.logger.warning(f"   Range: [{min_val}, {max_val}], Out-of-bounds: {x[mask].tolist()}")
             print("Out of bounds:", x[mask])
         assert not mask.any()
         return 2 * (x - min_val) / (max_val - min_val) - 1
@@ -194,28 +137,8 @@ class ReducedModel(Block):
     def _precompute_chebyshev(self, alpha_scaled, Re_scaled):
         self._cheb_X = self._chebyshev_basis(alpha_scaled, Re_scaled)
         X = self._cheb_X
-        
-        # 🔍 DIAGNOSTIC: Check Chebyshev basis for NaN/Inf
-        if torch.isnan(X).any() or torch.isinf(X).any():
-            self.logger.critical(f"⚠️ NaN/Inf in Chebyshev basis X! NaN: {torch.isnan(X).sum()}, Inf: {torch.isinf(X).sum()}")
-        
-        # 🔍 DIAGNOSTIC: Check condition number of normal equations
-        XTX = X.T @ X
-        try:
-            cond_num = torch.linalg.cond(XTX).item()
-            self.logger.info(f"🔍 Chebyshev matrix condition number: {cond_num:.2e}")
-            if cond_num > 1e10:
-                self.logger.warning(f"⚠️ Ill-conditioned Chebyshev matrix! cond(X.T@X) = {cond_num:.2e}")
-        except Exception as e:
-            self.logger.critical(f"⚠️ Failed to compute condition number: {e}")
-        
         reg = self._l2_reg * torch.eye(X.shape[1], device=X.device, dtype=X.dtype)
         self._normal_lhs = torch.linalg.solve(X.T @ X + reg, X.T)
-        
-        # 🔍 DIAGNOSTIC: Check normal_lhs for NaN/Inf
-        if torch.isnan(self._normal_lhs).any() or torch.isinf(self._normal_lhs).any():
-            self.logger.critical(f"⚠️ NaN/Inf in normal_lhs! NaN: {torch.isnan(self._normal_lhs).sum()}, Inf: {torch.isinf(self._normal_lhs).sum()}")
-        
         self._precomputed = True
 
     def _ridge_solve(self, y):
@@ -252,72 +175,3 @@ class ReducedModel(Block):
             self.logger.critical(f"⚠️ CD validation error too high: {val_errs['CD_mse']:.2e}")
         if val_errs['CM_mse'] > threshold:
             self.logger.critical(f"⚠️ CM validation error too high: {val_errs['CM_mse']:.2e}")
-    
-    def plot(self, y_data, VV, AA, coeffs, title, zlabel, iteration):
-        fig = go.Figure()
-
-        # Scatter plot of Ground Truth data
-        fig.add_trace(go.Scatter3d(
-            x=VV.flatten(),
-            y=AA.flatten(),
-            z=y_data.flatten(),
-            mode='markers',
-            marker=dict(size=3, color='blue', opacity=0.6),
-            name='Ground Truth',
-            hoverinfo='text',
-            text=[f"Re: {v:.2e}, AoA: {a:.2f}, {zlabel}: {z:.4f}" 
-                for v, a, z in zip(VV.flatten(), AA.flatten(), y_data.flatten())]
-        ))
-
-        # Surface plot of Chebyshev Prediction
-        # Create a grid for evaluation
-        n_grid = 50
-        re_range = torch.linspace(float(VV.min()), float(VV.max()), n_grid, device=coeffs.device)
-        aa_range = torch.linspace(float(AA.min()), float(AA.max()), n_grid, device=coeffs.device)
-        
-        RE, AA_GRID = torch.meshgrid(re_range, aa_range, indexing='xy')
-        
-        nfConfig = self.config.neuralFoilSampling
-        RE_flat = RE.reshape(-1)
-        AA_flat = AA_GRID.reshape(-1)
-        
-        # Scale to domain [-1, 1] using the same config constants
-        RE_scaled = self._scale_to_domain(RE_flat, nfConfig.Re_min, nfConfig.Re_max)
-        AA_scaled = self._scale_to_domain(AA_flat, nfConfig.AoA_min, nfConfig.AoA_max)
-        
-        # Compute basis for the grid
-        X_grid = self._chebyshev_basis(AA_scaled, RE_scaled)
-        
-        # Predict Z
-        Z_flat = X_grid @ coeffs
-        Z_grid = Z_flat.reshape(n_grid, n_grid)
-
-        fig.add_trace(go.Surface(
-            x=re_range.cpu().numpy(),
-            y=aa_range.cpu().numpy(),
-            z=Z_grid.detach().cpu().numpy(),
-            colorscale='Viridis',
-            name='Chebyshev Prediction',
-            showscale=True,
-            opacity=0.7
-        ))
-
-        fig.update_layout(
-            title=f"{title} - Iteration {iteration}",
-            scene=dict(
-                xaxis_title='Re',
-                yaxis_title='AoA [deg]',
-                zaxis_title=zlabel,
-            ),
-            width=1000,
-            height=700,
-            showlegend=True
-        )
-
-        out_dir = Path(self.config.io.checkpoint_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        # Add mode suffix to prevent 2D/3D overwriting
-        mode_suffix = "3D" if self.config.neuralFoilSampling.use_3d_llt else "2D"
-        plot_path = out_dir / f"reducedModel_{zlabel}_{iteration}_{mode_suffix}.html"
-        print(f"Saving plot to {plot_path}")
-        fig.write_html(plot_path, include_plotlyjs="cdn")
