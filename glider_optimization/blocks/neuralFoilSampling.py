@@ -68,7 +68,7 @@ class NeuralFoilSampling(Block):
                     "Ensure glider_optimization/aero_rom is on PYTHONPATH and deps are installed."
                 )
 
-            ckpt_path = getattr(nfConfig, "llt_ckpt_path", "aero_rom/artifacts/models/3d_blocks.pt")
+            ckpt_path = getattr(nfConfig, "llt_ckpt_path", "artifacts/models/3d_blocks.pt")
             ckpt = torch.load(ckpt_path, map_location=self.device)
             flow = ckpt.get("flow", {})
             wing = ckpt.get("wing_geometry", {})

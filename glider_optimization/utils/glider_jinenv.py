@@ -134,7 +134,7 @@ class GliderPerching :
 
                 # Elevator centroid
                 if "elevator_x" in cent:
-                    com_e_x = float(cent["elevator_x"])
+                    com_e_x = float(l + cent["elevator_x"])
                 if "elevator_z" in cent:
                     com_e_z = float(cent["elevator_z"])
 
@@ -253,9 +253,9 @@ class GliderPerching :
             r_e_x = r_e_bx * cos(theta) - r_e_bz * sin(theta)
             r_e_z = r_e_bx * sin(theta) + r_e_bz * cos(theta)
 
-            # torque about y: tau = r_x*F_z - r_z*F_x
-            τ_w = r_w_x * F_w[1] - r_w_z * F_w[0] + M_w
-            τ_e = r_e_x * F_e[1] - r_e_z * F_e[0] + M_e
+            # torque about y (matching 2D convention): tau = r_z*F_x - r_x*F_z
+            τ_w = r_w_z * F_w[0] - r_w_x * F_w[1] + M_w
+            τ_e = r_e_z * F_e[0] - r_e_x * F_e[1] + M_e
             thetaddot = -1. / I * (τ_w + τ_e)
 
         else:
