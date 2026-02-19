@@ -74,7 +74,7 @@ class NeuralFoilSampling(Block):
             wing = ckpt.get("wing_geometry", {})
             elev = ckpt.get("elevator_geometry", {})
 
-            # Build LLT geometry once (airfoil name here is irrelevant: you optimize Kulfan params anyway)
+            # Build LLT geometry once (airfoil name here is irrelevant)
             comp = _LLT_params(
                 wing["y_half"], wing["c_half"], wing["xle_half"], wing["twist_half"],
                 wing.get("airfoil", "naca4412").lower().replace("_", "").replace(" ", ""), # if the dict contains "airfoil" use it, otherwise default to "naca4412"
