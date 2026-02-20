@@ -34,18 +34,18 @@ class Airfoil(Block):
         )
         
         self._iter = 0
-        self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=0.99)
+        self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=af_conf.gamma)
         self.frames = []
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        self._iter = downstream_info.get("iteration", self._iter)
+        self._iter = downstream_info["iteration"]
 
         if self._iter % self.config.io.log_every == 0:
             self.plot()
             if self.config.io.wandb.enabled:
                 self._log_params_to_wandb()
-        
+                
         return {
             "upper_weights": self.upper_params,
             "lower_weights": self.lower_params,
@@ -86,7 +86,7 @@ class Airfoil(Block):
             [self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param],
             lr=self.config.airfoil.lr
         )
-        self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=0.99)
+        self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=self.config.airfoil.gamma)
 
 
     def get_lr(self) -> float:

@@ -1,5 +1,6 @@
 from pathlib import Path
 import yaml
+from enum import Enum
 from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 import numpy as np
@@ -8,6 +9,7 @@ class RunConfig(BaseModel):
     seed: int = 0
     device: str = "cpu"
     max_outer_iters: int = 50
+    is_baseline: bool = False
     
 class AirfoilConfig(BaseModel):
     lr: float = 1e-2
@@ -21,8 +23,10 @@ class AirfoilConfig(BaseModel):
     TE_thickness: float = 0.0
     N1: float = 0.5
     N2: float = 1.0
+    gamma: float = 0.99
 
     model_config = {"arbitrary_types_allowed": True}
+    
 
     @field_validator("upper_initial_weights", "lower_initial_weights", mode="before")
     @classmethod
@@ -87,7 +91,6 @@ class OCPConfig(BaseModel):
     initial_states: list[list[float]] = Field(
         default_factory= lambda : [[-8.5, 0 , 0. , 0., 6., 3. , 0., 0.01]]
     )
-    
 class IOConfig(BaseModel):
     gif_fps: int = 1
     log_every: int = 1
@@ -97,6 +100,12 @@ class IOConfig(BaseModel):
     debug: bool = False
     wandb: WandbConfig = Field(default_factory=WandbConfig)
     
+class EvaluationMode(str, Enum):
+    Perching = "Perching"
+    Time = "Time"
+    SoftLanding = "SoftLanding"
+class EvaluationConfig(BaseModel):
+    mode: EvaluationMode = EvaluationMode.Perching
 class Config(BaseModel):
     run: RunConfig
     airfoil: AirfoilConfig = Field(default_factory=AirfoilConfig) 
@@ -104,6 +113,7 @@ class Config(BaseModel):
     reducedModel: ReducedModelConfig = Field(default_factory=ReducedModelConfig)
     io: IOConfig
     ocp: OCPConfig = Field(default_factory=OCPConfig)
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     
 def load_config(path: Path) -> Config:
     with path.open("r") as f:

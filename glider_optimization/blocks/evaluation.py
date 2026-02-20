@@ -1,12 +1,14 @@
 from ..blockBase import Block
 from typing import override
-from ..config import Config
+from ..config import Config, EvaluationMode
 from typing import Dict, Any
 import matplotlib.pyplot as plt
 from pathlib import Path
+import numpy as np
 import wandb
 import logging
 
+EVALUATION = "Trajectory"
 
 class Evaluation(Block):
     @override
@@ -16,38 +18,85 @@ class Evaluation(Block):
         self.objective_evolution = []
         self.cost_evolution = []
         self.last_traj = None
+        self.eval_map = {
+            EvaluationMode.Perching: {
+                "fwd": self.forward_ocp_cost,
+                "bwd": self.backward_ocp_cost
+            },
+            EvaluationMode.SoftLanding: {
+                "fwd": self.forward_ocp_cost,
+                "bwd": self.backward_ocp_cost
+            },
+            EvaluationMode.Time: {
+                "fwd": self.forward_time,
+                "bwd": self.backward_time
+            } 
+        }
         
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         self.last_traj = downstream_info["trajectory"]
-        
-        cost_vals = [float(t["cost"][0][0]) for t in self.last_traj]
-        cost_val = sum(cost_vals) / len(cost_vals)
-            
+        eval_mode = self.config.evaluation.mode
+        eval_fn = self.eval_map[eval_mode]["fwd"]
+        J = eval_fn()
+                    
         aug = downstream_info["augmented_lagrangian"]
-        total_obj = cost_val + float(aug)
+        total_obj = J + float(aug)
         
         iteration = downstream_info["iteration"]
         if iteration % self.config.io.log_every == 0:
-            self.logger.info(f"Objective (total) = {total_obj}, Cost = {cost_val}")
+            self.logger.info(f"Objective (total) = {total_obj}, Cost = {J}")
         
         if self.config.io.wandb.enabled:
-            self._log_to_wandb(total_obj, cost_val, aug, iteration)
+            self._log_to_wandb(total_obj, J, aug, iteration)
         else:
             self.objective_evolution.append(total_obj)
-            self.cost_evolution.append(cost_val)
+            self.cost_evolution.append(J)
 
-        return {}
+        return {
+            "total_obj": total_obj
+        }
     
-    def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
+    def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:        
+        eval_mode = self.config.evaluation.mode
+        eval_fn = self.eval_map[eval_mode]["bwd"]
+        dJ_deps_list = eval_fn()
+        
+        return {"dJ_deps": dJ_deps_list}
+
+    def forward_ocp_cost(self):
+        
+        cost_vals = [float(t["cost"][0][0]) for t in self.last_traj]
+        return sum(cost_vals) / len(cost_vals)
+        
+    def forward_time(self):
+        total_time = [t["state_traj_opt"][:,7].sum() for t in self.last_traj]
+        return sum(total_time) / len(total_time)
+    
+    def backward_ocp_cost(self):
         w = self.config.ocp.terminal_state_weight
         
         dJ_deps_list = []
         for traj in self.last_traj:
+            dJ_deps_traj = np.zeros(traj['state_traj_opt'].shape)
             eps_terminal = traj['state_traj_opt'][-1]
-            dJ_deps_list.append(2 * (w * eps_terminal))
-        return {"dJ_deps": dJ_deps_list}
+            
+            # TODO: this works only because the target is (0,0..)
+            dJ_deps_traj[-1, :] = 2 * (w * eps_terminal)
+            
+            dJ_deps_list.append(dJ_deps_traj)
+            
+        return dJ_deps_list
+        
+    def backward_time(self):
+        dJ_deps_list = []
+        for traj in self.last_traj:
+            dJ_deps_traj = np.zeros(traj['state_traj_opt'].shape)
+            dJ_deps_traj[:,7] = 1.
+            dJ_deps_list.append(dJ_deps_traj)
 
+        return dJ_deps_list
+    
     def _log_to_wandb(self, total_obj, cost_val, aug, iteration):
         metrics = {
             "evaluation/objective_total": total_obj,

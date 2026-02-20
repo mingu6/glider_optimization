@@ -4,7 +4,7 @@ from typing import Dict, Any, override, List, Optional
 from ..utils.go_safe_pdp import COCsys
 from ..utils.glider_jinenv import GliderPerching
 from ..utils.idoc_ineq import build_blocks_idoc, idoc_full
-from ..config import Config
+from ..config import Config, EvaluationMode
 from casadi import pi, vertcat, DM, Function
 import numpy as np
 import torch
@@ -24,7 +24,7 @@ def solve_worker(config: Config,
                  prev_w_opt: Optional[List[float]] = None, 
                  prev_lam_g: Optional[List[float]] = None, 
                  prev_lam_x: Optional[List[float]] = None) -> Dict[str, Any]:
-    
+
     env = GliderPerching(config)
     coc = COCsys()
     
@@ -47,7 +47,7 @@ def solve_worker(config: Config,
 
     X_next = X + dt/6*(k1 + 2*k2 + 2*k3 + k4)
 
-    env.initCost(state_weights=config.ocp.terminal_state_weight, wu=config.ocp.stage_control_weight)
+    env.initCost(state_weights=config.ocp.terminal_state_weight, wu=config.ocp.stage_control_weight, init_state=init_state)
     env.initConstraints(-pi/3, pi/8, 13)
     
     coc.setAuxvarVariable(vertcat(env.dyn_auxvar))
@@ -59,6 +59,9 @@ def solve_worker(config: Config,
     coc.setFinalCost(env.final_cost)
 
     coc.setPathInequCstr(env.path_inequ)
+    #coc.setFinalInequCstr(env.final_inequ)
+    
+    coc.diffCPMP()
     
     warm_start = False
     if prev_w_opt is not None and prev_lam_g is not None:
@@ -72,6 +75,14 @@ def solve_worker(config: Config,
                        auxvar_value=auxvar_vector, 
                        timeVarying=True, 
                        warm_start=warm_start)
+    
+    # This shouldn't be part of the forward, however CasaDi functions cannot be pickled.   
+    try:
+        auxsys_COC = coc.getAuxSys(opt_sol=res, threshold=1e-5)
+        res['auxsys_COC'] = auxsys_COC
+    except Exception as e:
+        res['auxsys_COC'] = None
+        print(f"Warning: Failed to extract sensitivity data: {e}")
         
     return res
 
@@ -82,45 +93,9 @@ class OCP(Block):
         self.device = torch.device(config.run.device)
         self.logger = logging
         
-        # This is an instance kept only for graph and symbolic derivatives construction.
-        # It is never used in practice, otherwise it'd prevent parallelization.
+        # Not used, kept only for plotting/animation purposes
         self.env = GliderPerching(self.config)
-        self.coc = COCsys()
-        
-        self.env.initDyn()
-        # ===================================================================
-        f_fun = Function(
-            "f_fun",
-            [self.env.X, self.env.U, self.env.dyn_auxvar],
-            [self.env.f]
-        )
-
-        X = self.env.X
-        U = self.env.U
-        P = self.env.dyn_auxvar
-        dt = X[-1]
-
-        k1 = f_fun(X, U, P)
-        k2 = f_fun(X + 0.5*dt*k1, U, P)
-        k3 = f_fun(X + 0.5*dt*k2, U, P)
-        k4 = f_fun(X + dt*k3, U, P)
-
-        X_next = X + dt/6*(k1 + 2*k2 + 2*k3 + k4)
-        
-        self.env.initCost(state_weights=config.ocp.terminal_state_weight, wu=config.ocp.stage_control_weight)
-        self.env.initConstraints(-pi/3, pi/8, 13)
-        
-        self.coc.setAuxvarVariable(vertcat(self.env.dyn_auxvar))
-        self.coc.setStateVariable(self.env.X)
-        self.coc.setControlVariable(self.env.U)
-        self.coc.setDyn(X_next)
-
-        self.coc.setPathCost(self.env.path_cost)
-        self.coc.setFinalCost(self.env.final_cost)
-
-        self.coc.setPathInequCstr(self.env.path_inequ)
-        self.coc.diffCPMP()
-        
+        self.env.state_weights = config.ocp.terminal_state_weight
         self.last_trajs: List[Dict[str, Any]] = [] 
         
     @override
@@ -131,10 +106,6 @@ class OCP(Block):
         weights_CD = downstream_info["phi_CD"].view(-1, 1).detach().cpu().numpy()
         weights_CM = downstream_info["phi_CM"].view(-1, 1).detach().cpu().numpy()
         
-        #np.save("weights_CL.npy", weights_CL)
-        #np.save("weights_CD.npy", weights_CD)
-        #np.save("weights_CM.npy", weights_CM)
-
         auxvar_vector = np.vstack([weights_CL, weights_CD, weights_CM])
         
         initial_states = self.config.ocp.initial_states
@@ -201,13 +172,13 @@ class OCP(Block):
         for i, traj in enumerate(self.last_trajs):
             dJ_deps = dJ_deps_list[i]
             
-            auxsys_COC = self.coc.getAuxSys(opt_sol=traj, threshold=1e-5)
+            auxsys_COC = traj['auxsys_COC']
             idoc_ctx = build_blocks_idoc(auxsys_COC, delta)
             traj_deriv_COC = idoc_full(idoc_ctx)
             
-            deps_dphi = traj_deriv_COC['state_traj_opt'][-1]
+            deps_dphi = traj_deriv_COC['state_traj_opt']
             
-            dJ_dphi_partial = deps_dphi.T @ dJ_deps
+            dJ_dphi_partial = np.einsum('ij,ijk->k', dJ_deps, deps_dphi).reshape(2028,1)
             
             if total_dJ_dphi_np is None:
                 total_dJ_dphi_np = dJ_dphi_partial
@@ -246,7 +217,6 @@ class OCP(Block):
             
         ax.scatter(0, 0, color='red', marker='x', s=100, linewidth=3, zorder=3)
         
-        # Create custom legend
         legend_elements = [
             Line2D([0], [0], color='gray', lw=2, label='Trajectories'),
             Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=10, label='Start'),
@@ -287,7 +257,7 @@ class OCP(Block):
                         traj['control_traj_opt'],
                         save_option=True,
                         title=str(title),
-                        fps=self.config.io.gif_fps
+                        fps=self.config.io.gif_fps,
                     )
                     gif_path = f"{title}.gif"
                     wandb.log(

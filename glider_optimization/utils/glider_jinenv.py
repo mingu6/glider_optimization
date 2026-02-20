@@ -8,9 +8,9 @@ from casadi import (
 import numpy as np
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Rectangle
 from matplotlib.collections import LineCollection
-from ..config import Config
+from ..config import Config, EvaluationMode
 class GliderPerching :
     def __init__(self, config: Config, project_name='glider-perching'):
         self.project_name = project_name
@@ -56,6 +56,7 @@ class GliderPerching :
         l_w_i = -0.005                                # vector to leading edge from total body center of mass
         l_w_f = -0.015                                # vector to trailing edge from total body center of mass
         l = 0.26                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
+        self.l = l
         l_e = 0.02                                    # distance from the hinge to the mean aerodynamic chord of the elevator
         rho = 1.225                                   # assume Standard sea-level air density
         m_f = 0.4 * m                                 # mass of fuselage
@@ -168,8 +169,15 @@ class GliderPerching :
         
         self.f = vertcat(xdot, zdot, thetadot, phidot, xddot, zddot, thetaddot, 0)
 
-    def initCost(self, state_weights, wu=0.001, stage_scale = 0.0001):
+    def initCost(self, state_weights, wu=0.001, stage_scale = 0.0001, init_state = None):
+        # [x   z   theta   phi   xdot   zdot   thetadot]
         self.goal = [0., 0., 0., 0., 0., 0., 0., 0.]
+        
+        if self.config.evaluation.mode == EvaluationMode.SoftLanding:
+            if init_state is None:
+                raise RuntimeError("[initCost] Expected an initial state for SoftLanding")
+            self.goal[0] = init_state[0]    
+        
         self.state_weights = state_weights
         self.cost_auxvar = vcat([])
 
@@ -189,19 +197,37 @@ class GliderPerching :
 
         self.constraint_auxvar = vcat(constraint_auxvar)
 
+        # min_phi_dot <= phi_dot <= max_phi_dot
         path_inequ_Uub = self.U - max_u
         path_inequ_Ulb = -self.U - max_u
+        
+        # min_phi <= phi <= max_phi
         path_inequ_Xub = self.X[3] - max_phi
-        path_inequ_Xlb = -self.X[3] + min_phi
-        self.path_inequ = vcat([path_inequ_Uub, path_inequ_Ulb, path_inequ_Xub, path_inequ_Xlb])
+        path_inequ_Xlb = -self.X[3] + min_phi 
+        
+        const = [path_inequ_Uub, path_inequ_Ulb, path_inequ_Xub, path_inequ_Xlb]
+        
+        if self.config.evaluation.mode == EvaluationMode.SoftLanding:
+            const.append(-self.X[1]) # z >= 0
+            const.append(self.X[2] - pi/2 ) # -pi/2 >= theta >= pi/2
+            const.append(- self.X[2] - pi/2 ) 
+            
+            const.append(- (self.X[1] - self.l * sin(self.X[2]) ) ) # back-z >= 0
+            const.append(- (self.X[1] + self.l * sin(self.X[2]) ) ) # front-z >= 0
+                
+        self.path_inequ = vcat(const)
+        self.final_inequ = vcat(const[2:])
 
     def play_animation(self, state_traj, control_traj, 
                     save_option=False, title='glider-perching', fps=30):
         """
-        Create stunning glider perching animation with all metrics.
+        Create stunning glider perching animation with mode-specific visualizations.
+        
+        For SoftLanding: Shows ground, dynamic distance measurement, altitude display
+        For Perching: Shows target circle at goal position
         
         Args:
-            state_traj: State trajectory (N x 8) - [x, z, theta, phi, xdot, zdot, thetadot]
+            state_traj: State trajectory (N x 8) - [x, z, theta, phi, xdot, zdot, thetadot, t]
             control_traj: Control trajectory (N x 1) - [phidot]
             save_option: Whether to save animation as GIF
             title: Filename for saved animation
@@ -209,12 +235,17 @@ class GliderPerching :
         """
         # ==================== PRE-COMPUTE ALL METRICS ====================
         n_frames = len(state_traj)
+        is_soft_landing = self.config.evaluation.mode == EvaluationMode.SoftLanding
         
         # Attack angles: theta - arctan2(zdot, xdot)
         attack_angles = state_traj[:, 2] - np.arctan2(state_traj[:, 5], state_traj[:, 4])
         
         # Weighted tracking errors
-        errors = state_traj - self.goal
+        if is_soft_landing:
+            goal = np.array([state_traj[0][0], 0., 0., 0., 0., 0., 0., 0.])
+        else:
+            goal = self.goal
+        errors = state_traj - goal
         weighted_errors = np.sum(errors * self.state_weights * errors, axis=1)
         
         # Data ranges for plot limits
@@ -232,16 +263,18 @@ class GliderPerching :
         f = 0.6              # Center offset fraction
         
         # Target pose geometry
-        x_target, z_target, theta_target = self.goal[0], self.goal[1], self.goal[2]
+        x_target, z_target, theta_target = goal[0], goal[1], goal[2]
         x0_target = x_target - f * L * np.cos(theta_target)
         z0_target = z_target - f * L * np.sin(theta_target)
         x1_target = x0_target + L * np.cos(theta_target)
         z1_target = z0_target + L * np.sin(theta_target)
-        
+                
         # ==================== FIGURE SETUP ====================
         with plt.style.context('seaborn-v0_8-darkgrid'):
             fig = plt.figure(figsize=(14, 10), facecolor='#F5F5F5')
-            fig.suptitle('Glider Perching Trajectory Optimization', 
+            
+            mode_title = "Soft Landing" if is_soft_landing else "Perching"
+            fig.suptitle(f'Glider {mode_title} Trajectory Optimization', 
                         fontsize=14, fontweight='bold', y=0.98)
             
             gs = fig.add_gridspec(3, 2, hspace=0.4, wspace=0.3,
@@ -265,20 +298,83 @@ class GliderPerching :
             ax_sim.set_ylim(z_min - pad_z, z_max + pad_z)
             
             ax_sim.set_aspect('equal', adjustable='box')
-            ax_sim.set_title("Glider Perching Simulation", fontsize=12, fontweight='bold', pad=10)
+            ax_sim.set_title(f"Glider {mode_title} Simulation", fontsize=12, fontweight='bold', pad=10)
             ax_sim.set_xlabel("X Position (m)", fontsize=10)
             ax_sim.set_ylabel("Z Position (m)", fontsize=10)
             ax_sim.grid(True, alpha=0.2, linestyle=':')
             
             # Start position marker
-            ax_sim.plot(state_traj[0, 0], state_traj[0, 1], 'x', color='black', markersize=8, markeredgewidth=2, label='Start', zorder=4)
+            ax_sim.plot(state_traj[0, 0], state_traj[0, 1], 'x', color='black', 
+                       markersize=8, markeredgewidth=2, label='Start', zorder=4)
 
-            # Target visualization with glow
-            target_circle = Circle((x_target, z_target), 0.1, fill=False, 
-                                edgecolor='#FF5252', linestyle='-', linewidth=3, zorder=4, label='Target')
-            ax_sim.add_patch(target_circle)
+            # ==================== MODE-SPECIFIC VISUALIZATION ====================
+            if is_soft_landing:
+                # === SOFT LANDING MODE ===
+                
+                # Ground line
+                ground_x_min = x_min - pad_x
+                ground_x_max = x_max + pad_x
+                ax_sim.axhline(0, color='#8B4513', linewidth=3, linestyle='-', alpha=0.8, label='Ground', zorder=2)
+                
+                # Add ground fill below z=0 for visual effect
+                ax_sim.fill_between([ground_x_min, ground_x_max], [z_min - pad_z, z_min - pad_z], 
+                                   [0, 0], color='#D2691E', alpha=0.15, zorder=1)
+                
+                # Landing target zone (vertical dashed line)
+                landing_zone_line = ax_sim.axvline(x_target, color='#FF5252', linewidth=2.5, 
+                                                   linestyle='--', alpha=0.7, label='Landing Target', zorder=3)
+                
+                # Landing zone rectangle (highlight area)
+                landing_zone_width = 0.3  # meters
+                landing_zone_rect = Rectangle((x_target - landing_zone_width/2, z_min - pad_z), 
+                                             landing_zone_width, pad_z,
+                                             facecolor='#FF5252', alpha=0.1, edgecolor='none', zorder=1)
+                ax_sim.add_patch(landing_zone_rect)
+                
+                # Distance measurement arrow (will be updated dynamically)
+                distance_arrow = ax_sim.annotate('', xy=(x_target, -0.5), xytext=(state_traj[0, 0], -0.5),
+                    arrowprops=dict(arrowstyle='<->', color='#FF5252', lw=3, shrinkA=0, shrinkB=0),
+                    zorder=10)
+                
+                # Distance text (will be updated dynamically)
+                distance_text = ax_sim.text((state_traj[0, 0] + x_target) / 2, -0.7, '',
+                    fontsize=12, fontweight='bold', color='#FF5252', ha='center', va='top',
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='#FF5252', linewidth=2),
+                    zorder=11)
+                
+                # Altitude display (top-left corner, will be updated)
+                altitude_text = ax_sim.text(0.02, 0.98, '', transform=ax_sim.transAxes,
+                    fontsize=12, fontweight='bold', verticalalignment='top',
+                    bbox=dict(boxstyle='round,pad=0.7', facecolor='white', alpha=0.95, 
+                             edgecolor='#2E86AB', linewidth=2.5),
+                    zorder=15)
+                
+                # Velocity magnitude display (top-left corner, below altitude)
+                velocity_text = ax_sim.text(0.02, 0.88, '', transform=ax_sim.transAxes,
+                    fontsize=11, fontweight='bold', verticalalignment='top',
+                    bbox=dict(boxstyle='round,pad=0.6', facecolor='white', alpha=0.95, 
+                             edgecolor='#E63946', linewidth=2.5),
+                    zorder=15)
+                
+            else:
+                # === PERCHING MODE ===
+                target_circle = Circle((x_target, z_target), 0.1, fill=False, 
+                                    edgecolor='#FF5252', linestyle='-', linewidth=3, 
+                                    zorder=4, label='Target')
+                ax_sim.add_patch(target_circle)
+                
+                for radius_mult in [1.5, 2.0, 2.5]:
+                    glow_circle = Circle((x_target, z_target), 0.1 * radius_mult, fill=False,
+                                       edgecolor='#FF5252', linestyle=':', linewidth=1,
+                                       alpha=0.3 / radius_mult, zorder=3)
+                    ax_sim.add_patch(glow_circle)
+                
+                distance_arrow = None
+                distance_text = None
+                altitude_text = None
+                velocity_text = None
             
-            # Glider artists
+            # Glider artists (common to both modes)
             glider_body, = ax_sim.plot([], [], 'o-', lw=4, color='#2E86AB', 
                                     markersize=8, markerfacecolor='#A23B72',
                                     markeredgewidth=2, markeredgecolor='white',
@@ -288,7 +384,7 @@ class GliderPerching :
                                     markeredgecolor='red', alpha=0.7, zorder=6)
             trail_collection = LineCollection([], linewidths=2, alpha=0.6, cmap='viridis')
             ax_sim.add_collection(trail_collection)
-            ax_sim.legend(loc='upper right', fontsize=9)
+            ax_sim.legend(loc='upper right', fontsize=9, framealpha=0.9)
             
             # ==================== LINEAR VELOCITIES ====================
             ax_vel = fig.add_subplot(gs[2, 0])
@@ -296,6 +392,7 @@ class GliderPerching :
             ax_vel.set_ylim(vel_range)
             ax_vel.set_title("Linear Velocities", fontsize=11, fontweight='bold', pad=10)
             ax_vel.set_ylabel("Velocity (m/s)", fontsize=9)
+            ax_vel.set_xlabel("Frame", fontsize=9)
             ax_vel.grid(True, alpha=0.3, linestyle='--')
             ax_vel.axhline(0, color='gray', linestyle='--', alpha=0.5, linewidth=1)
             xdot_line, = ax_vel.plot([], [], lw=2.5, color="#E63946", label="$\\dot{x}$", alpha=0.9)
@@ -327,6 +424,7 @@ class GliderPerching :
             ax_ang.set_ylim(ang_range)
             ax_ang.set_title("Angular Velocities", fontsize=11, fontweight='bold', pad=10)
             ax_ang.set_ylabel("Velocity (rad/s)", fontsize=9)
+            ax_ang.set_xlabel("Frame", fontsize=9)
             ax_ang.grid(True, alpha=0.3, linestyle='--')
             ax_ang.axhline(0, color='gray', linestyle='--', alpha=0.5, linewidth=1)
             thetadot_line, = ax_ang.plot([], [], lw=2.5, color="#118AB2", label="$\\dot{\\theta}$", alpha=0.9)
@@ -352,6 +450,11 @@ class GliderPerching :
                 attack_line.set_data([], [])
                 error_line.set_data([], [])
                 
+                if is_soft_landing:
+                    distance_text.set_text('')
+                    altitude_text.set_text('')
+                    velocity_text.set_text('')
+                
                 trail_points.clear()
                 xdot_data.clear()
                 zdot_data.clear()
@@ -360,16 +463,25 @@ class GliderPerching :
                 attack_data.clear()
                 error_data.clear()
                 
-                return (glider_body, com_marker, trail_collection, xdot_line, zdot_line,
-                        thetadot_line, phidot_line, attack_line, error_line)
+                artists = [glider_body, com_marker, trail_collection, xdot_line, zdot_line,
+                          thetadot_line, phidot_line, attack_line, error_line]
+                
+                if is_soft_landing:
+                    artists.extend([distance_arrow, distance_text, altitude_text, velocity_text])
+                
+                return tuple(artists)
             
             def update(frame):
                 """Update all artists for current frame."""
                 if frame >= n_frames:
-                    return (glider_body, com_marker, trail_collection, xdot_line, zdot_line,
-                        thetadot_line, phidot_line, attack_line, error_line)
+                    artists = [glider_body, com_marker, trail_collection, xdot_line, zdot_line,
+                          thetadot_line, phidot_line, attack_line, error_line]
                 
-                # Extract current state
+                    if is_soft_landing:
+                        artists.extend([distance_arrow, distance_text, altitude_text, velocity_text])
+                    
+                    return tuple(artists) 
+                
                 x, z, theta, phi, xdot, zdot, thetadot, time = state_traj[frame]
                 
                 # ============ UPDATE SIMULATION ============
@@ -393,32 +505,59 @@ class GliderPerching :
                     trail_collection.set_segments(segments)
                     trail_collection.set_array(colors)
                 
+                # ============ SOFT LANDING SPECIFIC UPDATES ============
+                if is_soft_landing:
+                    # Update distance arrow and text
+                    horizontal_distance = abs(x - x_target)
+                    arrow_height = -0.5  # Fixed height for arrow
+                    
+                    distance_arrow.xy = (x_target, arrow_height)
+                    distance_arrow.set_position((x, arrow_height))
+                    
+                    distance_text.set_position(((x + x_target) / 2, arrow_height - 0.2))
+                    distance_text.set_text(f'{horizontal_distance:.2f} m')
+                    
+                    distance_arrow.arrowprops['color'] = '#FF5252'
+                    distance_text.set_color('#FF5252')
+                    distance_text.get_bbox_patch().set_edgecolor('#FF5252')
+                    
+                    altitude = max(0, z) 
+                    altitude_color = '#00FF00' if altitude < 0.5 else '#2E86AB' if altitude < 2.0 else '#FFA500'
+                    altitude_text.set_text(f'Altitude: {altitude:.2f} m')
+                    altitude_text.get_bbox_patch().set_edgecolor(altitude_color)
+                    
+                    velocity_magnitude = np.sqrt(xdot**2 + zdot**2)
+                    vel_color = '#00FF00' if velocity_magnitude < 2.0 else '#FFA500' if velocity_magnitude < 4.0 else '#FF5252'
+                    velocity_text.set_text(f'Speed: {velocity_magnitude:.2f} m/s')
+                    velocity_text.get_bbox_patch().set_edgecolor(vel_color)
+                
                 # ============ UPDATE TIME SERIES PLOTS ============
                 x_axis = range(frame + 1)
                 
-                # Linear velocities
                 xdot_data.append(xdot)
                 zdot_data.append(zdot)
                 xdot_line.set_data(x_axis, xdot_data)
                 zdot_line.set_data(x_axis, zdot_data)
                 
-                # Angular velocities
                 thetadot_data.append(thetadot)
                 if frame < len(control_traj):
                     phidot_data.append(control_traj[frame, 0])
                     phidot_line.set_data(x_axis, phidot_data)
                 thetadot_line.set_data(x_axis, thetadot_data)
                 
-                # Attack angle (pre-computed)
                 attack_data.append(attack_angles[frame])
                 attack_line.set_data(x_axis, attack_data)
                 
-                # Tracking error (pre-computed)
                 error_data.append(weighted_errors[frame])
                 error_line.set_data(x_axis, error_data)
                 
-                return (glider_body, com_marker, trail_collection, xdot_line, zdot_line,
-                        thetadot_line, phidot_line, attack_line, error_line)
+                artists = [glider_body, com_marker, trail_collection, xdot_line, zdot_line,
+                          thetadot_line, phidot_line, attack_line, error_line]
+                
+                if is_soft_landing:
+                    artists.extend([distance_arrow, distance_text, altitude_text, velocity_text])
+                
+                return tuple(artists)
             
             # ==================== CREATE ANIMATION ====================
             ani = animation.FuncAnimation(
@@ -436,7 +575,7 @@ class GliderPerching :
                 return ani
 
             try:
-                fig.canvas.manager.set_window_title("Glider Perching OCP")
+                fig.canvas.manager.set_window_title(f"Glider {mode_title} OCP")
             except Exception:
                 pass
             plt.show()
