@@ -247,7 +247,7 @@ class Airfoil(Block):
 
     def plot(self):
         airfoilConfig = self.config.airfoil
-        airfoil = asb.KulfanAirfoil(
+        airfoil_root = asb.KulfanAirfoil(
             name=self.config.io.run_name + "_airfoil",
             lower_weights=self.lower_params.detach().numpy(),
             upper_weights=self.upper_params.detach().numpy(),
@@ -259,11 +259,29 @@ class Airfoil(Block):
 
         fig, ax = plt.subplots(figsize=(6, 3), dpi=200)
     
-        x = np.reshape(np.array(airfoil.x()), -1)
-        y = np.reshape(np.array(airfoil.y()), -1)
-    
-        ax.plot(airfoil.x(), y, ".-", color="#280887", zorder=11)
-        ax.fill(x, y, color="#280887", alpha=0.2, zorder=10)
+        x_root = np.reshape(np.array(airfoil_root.x()), -1)
+        y_root = np.reshape(np.array(airfoil_root.y()), -1)
+
+        ax.plot(x_root, y_root, ".-", color="tab:blue", zorder=11, label="root")
+        ax.fill(x_root, y_root, color="tab:blue", alpha=0.2, zorder=10)
+
+        if getattr(self, "spanwise_enabled", False):
+            airfoil_tip = asb.KulfanAirfoil(
+                name=self.config.io.run_name + "_airfoil_tip",
+                lower_weights=self.lower_params_tip.detach().numpy(),
+                upper_weights=self.upper_params_tip.detach().numpy(),
+                leading_edge_weight=self.leading_edge_param_tip.detach().numpy(),
+                TE_thickness=self.TE_thickness_param_tip.detach().numpy(),
+                N1=airfoilConfig.N1,
+                N2=airfoilConfig.N2,
+            )
+
+            x_tip = np.reshape(np.array(airfoil_tip.x()), -1)
+            y_tip = np.reshape(np.array(airfoil_tip.y()), -1)
+
+            ax.plot(x_tip, y_tip, ".-", color="tab:red", zorder=13, label="tip")
+            ax.fill(x_tip, y_tip, color="tab:red", alpha=0.15, zorder=12)
+            ax.legend(loc="lower right", frameon=False, fontsize=8)
         
         ax.text(
             0.02, 0.95, f"{len(self.frames)}", 
