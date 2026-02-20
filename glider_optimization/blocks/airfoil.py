@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch
 import torch.optim.lr_scheduler as lr_scheduler
 import wandb
+import logging
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -21,14 +22,23 @@ class Airfoil(Block):
     @override
     def __init__(self, config: Config):
         self.config = config
+        self.logger = logging
         af_conf = self.config.airfoil
 
         # Optional: optimize both root and tip airfoils (used only by 3D LLT branch).
-        # 3D-only spanwise wing airfoil root/tip optimization is driven by plane.wing.airfoil_root/airfoil_tip
+        # 3D-only spanwise wing airfoil root/tip optimization can be seeded either from:
+        # - plane.wing.kulfan_root / kulfan_tip (preferred when provided), or
+        # - plane.wing.airfoil_root / airfoil_tip names (legacy fallback).
         use_3d = bool(getattr(self.config, "neuralFoilSampling", None) and self.config.neuralFoilSampling.use_3d_llt)
         wing_cfg = getattr(getattr(self.config, "plane", None), "wing", None)
 
-        wing_has_tip = bool(wing_cfg is not None and getattr(wing_cfg, "airfoil_tip", None))
+        wing_has_tip = bool(
+            wing_cfg is not None
+            and (
+                getattr(wing_cfg, "airfoil_tip", None) is not None
+                or getattr(wing_cfg, "kulfan_tip", None) is not None
+            )
+        )
         self.spanwise_enabled = bool(use_3d and wing_has_tip)
 
         # self.upper_params = nn.Parameter(torch.tensor(af_conf.upper_initial_weights, dtype=torch.float32))
@@ -36,30 +46,47 @@ class Airfoil(Block):
         # self.leading_edge_param = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
         # self.TE_thickness_param = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
 
+        def _from_named_airfoil(name_raw: str):
+            name = str(name_raw).lower().replace("_", "").replace(" ", "")
+            k = asb.Airfoil(name).to_kulfan_airfoil()
+            upper = np.array(k.upper_weights, dtype=float)
+            lower = np.array(k.lower_weights, dtype=float)
+            le = float(k.leading_edge_weight)
+            te = float(k.TE_thickness)
+            if upper.shape[0] != 8 or lower.shape[0] != 8:
+                raise ValueError(
+                    f"Expected 8 Kulfan weights from airfoil '{name_raw}', got upper={upper.shape}, lower={lower.shape}"
+                )
+            return upper, lower, le, te
+
+        def _from_kulfan_spec(spec):
+            upper = np.array(spec.upper_weights, dtype=float)
+            lower = np.array(spec.lower_weights, dtype=float)
+            le = float(spec.leading_edge_weight)
+            te = float(spec.TE_thickness)
+            if upper.shape[0] != 8 or lower.shape[0] != 8:
+                raise ValueError(
+                    f"Kulfan spec must have 8 weights for upper/lower; got upper={upper.shape}, lower={lower.shape}"
+                )
+            return upper, lower, le, te
+
         # ROOT initialization:
         # - 2D: from top-level YAML Kulfan weights (unchanged default behavior)
-        # - 3D: seed from plane.wing.airfoil_root (fallback to plane.wing.airfoil)
+        # - 3D: prefer plane.wing.kulfan_root (or plane.wing.kulfan),
+        #       fallback to plane.wing.airfoil_root (or plane.wing.airfoil)
         root_upper_init = np.array(af_conf.upper_initial_weights, dtype=float)
         root_lower_init = np.array(af_conf.lower_initial_weights, dtype=float)
         root_le_init = float(af_conf.leading_edge_weight)
         root_te_init = float(af_conf.TE_thickness)
 
         if use_3d and wing_cfg is not None:
-            root_name_raw = getattr(wing_cfg, "airfoil_root", None) or getattr(wing_cfg, "airfoil", None)
-            if root_name_raw is not None:
-                root_name = str(root_name_raw).lower().replace("_", "").replace(" ", "")
-                k_root = asb.Airfoil(root_name).to_kulfan_airfoil()
-
-                root_upper_init = np.array(k_root.upper_weights, dtype=float)
-                root_lower_init = np.array(k_root.lower_weights, dtype=float)
-                root_le_init = float(k_root.leading_edge_weight)
-                root_te_init = float(k_root.TE_thickness)
-
-                if root_upper_init.shape[0] != 8 or root_lower_init.shape[0] != 8:
-                    raise ValueError(
-                        f"Expected 8 Kulfan weights from wing root airfoil '{root_name_raw}', "
-                        f"got upper={root_upper_init.shape}, lower={root_lower_init.shape}"
-                    )
+            root_kulfan = getattr(wing_cfg, "kulfan_root", None) or getattr(wing_cfg, "kulfan", None)
+            if root_kulfan is not None:
+                root_upper_init, root_lower_init, root_le_init, root_te_init = _from_kulfan_spec(root_kulfan)
+            else:
+                root_name_raw = getattr(wing_cfg, "airfoil_root", None) or getattr(wing_cfg, "airfoil", None)
+                if root_name_raw is not None:
+                    root_upper_init, root_lower_init, root_le_init, root_te_init = _from_named_airfoil(root_name_raw)
 
         self.upper_params = nn.Parameter(torch.tensor(root_upper_init, dtype=torch.float32))
         self.lower_params = nn.Parameter(torch.tensor(root_lower_init, dtype=torch.float32))
@@ -70,21 +97,15 @@ class Airfoil(Block):
 
         # Tip parameters (only created/optimized when spanwise is enabled)
         if self.spanwise_enabled:
-            # Tip initialization comes from plane.wing.airfoil_tip (3D-only feature)
-            tip_name_raw = getattr(wing_cfg, "airfoil_tip", None)
-            tip_name = str(tip_name_raw).lower().replace("_", "").replace(" ", "")
-            k_tip = asb.Airfoil(tip_name).to_kulfan_airfoil()
-
-            tip_upper_init = np.array(k_tip.upper_weights, dtype=float)
-            tip_lower_init = np.array(k_tip.lower_weights, dtype=float)
-            tip_le_init = float(k_tip.leading_edge_weight)
-            tip_te_init = float(k_tip.TE_thickness)
-
-            if tip_upper_init.shape[0] != 8 or tip_lower_init.shape[0] != 8:
-                raise ValueError(
-                    f"Expected 8 Kulfan weights from wing tip airfoil '{tip_name_raw}', "
-                    f"got upper={tip_upper_init.shape}, lower={tip_lower_init.shape}"
-                )
+            # Tip initialization: prefer plane.wing.kulfan_tip, fallback to plane.wing.airfoil_tip
+            tip_kulfan = getattr(wing_cfg, "kulfan_tip", None)
+            if tip_kulfan is not None:
+                tip_upper_init, tip_lower_init, tip_le_init, tip_te_init = _from_kulfan_spec(tip_kulfan)
+            else:
+                tip_name_raw = getattr(wing_cfg, "airfoil_tip", None)
+                if tip_name_raw is None:
+                    raise ValueError("spanwise_enabled=True requires plane.wing.airfoil_tip or plane.wing.kulfan_tip")
+                tip_upper_init, tip_lower_init, tip_le_init, tip_te_init = _from_named_airfoil(tip_name_raw)
 
             self.upper_params_tip = nn.Parameter(torch.tensor(tip_upper_init, dtype=torch.float32))
             self.lower_params_tip = nn.Parameter(torch.tensor(tip_lower_init, dtype=torch.float32))
@@ -107,6 +128,9 @@ class Airfoil(Block):
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         self._iter = downstream_info.get("iteration", self._iter)
+
+        if getattr(self.config.io, "log_airfoil_coeffs", True):
+            self._log_airfoil_coeffs()
 
         if self._iter % self.config.io.log_every == 0:
             self.plot()
@@ -139,6 +163,35 @@ class Airfoil(Block):
             })
 
         return out
+
+    def _log_airfoil_coeffs(self):
+        root_upper = np.array(self.upper_params.detach().cpu().numpy(), dtype=float)
+        root_lower = np.array(self.lower_params.detach().cpu().numpy(), dtype=float)
+        root_le = float(self.leading_edge_param.detach().cpu().numpy()[0])
+        root_te = float(self.TE_thickness_param.detach().cpu().numpy()[0])
+
+        self.logger.info(
+            "Iter %d | airfoil root | upper=%s | lower=%s | LE=%.6f | TE=%.6f",
+            self._iter,
+            np.array2string(root_upper, precision=5, separator=", "),
+            np.array2string(root_lower, precision=5, separator=", "),
+            root_le,
+            root_te,
+        )
+
+        if getattr(self, "spanwise_enabled", False):
+            tip_upper = np.array(self.upper_params_tip.detach().cpu().numpy(), dtype=float)
+            tip_lower = np.array(self.lower_params_tip.detach().cpu().numpy(), dtype=float)
+            tip_le = float(self.leading_edge_param_tip.detach().cpu().numpy()[0])
+            tip_te = float(self.TE_thickness_param_tip.detach().cpu().numpy()[0])
+            self.logger.info(
+                "Iter %d | airfoil tip  | upper=%s | lower=%s | LE=%.6f | TE=%.6f",
+                self._iter,
+                np.array2string(tip_upper, precision=5, separator=", "),
+                np.array2string(tip_lower, precision=5, separator=", "),
+                tip_le,
+                tip_te,
+            )
 
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
         self._apply_gradients(upstream_grads)
@@ -218,6 +271,30 @@ class Airfoil(Block):
         self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
         self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]
 
+        if getattr(self, "spanwise_enabled", False):
+            self.upper_params_tip.grad = upstream_grads.get("dupper_params_tip", torch.zeros_like(self.upper_params_tip))
+            self.lower_params_tip.grad = upstream_grads.get("dlower_params_tip", torch.zeros_like(self.lower_params_tip))
+            self.leading_edge_param_tip.grad = upstream_grads.get("dleading_edge_param_tip", torch.zeros_like(self.leading_edge_param_tip))
+            self.TE_thickness_param_tip.grad = upstream_grads.get("dTE_thickness_param_tip", torch.zeros_like(self.TE_thickness_param_tip))
+
+            if getattr(self.config.io, "log_airfoil_coeffs", True):
+                g_ru = self.upper_params.grad.detach()
+                g_tu = self.upper_params_tip.grad.detach()
+                g_rl = self.lower_params.grad.detach()
+                g_tl = self.lower_params_tip.grad.detach()
+                g_rle = self.leading_edge_param.grad.detach()
+                g_tle = self.leading_edge_param_tip.grad.detach()
+                g_rte = self.TE_thickness_param.grad.detach()
+                g_tte = self.TE_thickness_param_tip.grad.detach()
+                self.logger.info(
+                    "Iter %d | grad root-tip Δ | upper=%.3e lower=%.3e LE=%.3e TE=%.3e",
+                    self._iter,
+                    float(torch.norm(g_ru - g_tu).cpu().item()),
+                    float(torch.norm(g_rl - g_tl).cpu().item()),
+                    float(torch.norm(g_rle - g_tle).cpu().item()),
+                    float(torch.norm(g_rte - g_tte).cpu().item()),
+                )
+
     def _step_scheduler(self, upstream_grads):
         if self.scheduler is None:
             return
@@ -245,9 +322,16 @@ class Airfoil(Block):
                 self.lower_params.data + min_gap
             )
 
+            if getattr(self, "spanwise_enabled", False):
+                self.TE_thickness_param_tip.clamp_(1e-4, 0.01)
+                self.upper_params_tip.data = torch.maximum(
+                    self.upper_params_tip.data,
+                    self.lower_params_tip.data + min_gap
+                )
+
     def plot(self):
         airfoilConfig = self.config.airfoil
-        airfoil = asb.KulfanAirfoil(
+        root_airfoil = asb.KulfanAirfoil(
             name=self.config.io.run_name + "_airfoil",
             lower_weights=self.lower_params.detach().numpy(),
             upper_weights=self.upper_params.detach().numpy(),
@@ -257,13 +341,32 @@ class Airfoil(Block):
             N2=airfoilConfig.N2,
         )
 
+        tip_airfoil = None
+        if getattr(self, "spanwise_enabled", False):
+            tip_airfoil = asb.KulfanAirfoil(
+                name=self.config.io.run_name + "_airfoil_tip",
+                lower_weights=self.lower_params_tip.detach().numpy(),
+                upper_weights=self.upper_params_tip.detach().numpy(),
+                leading_edge_weight=self.leading_edge_param_tip.detach().numpy(),
+                TE_thickness=self.TE_thickness_param_tip.detach().numpy(),
+                N1=airfoilConfig.N1,
+                N2=airfoilConfig.N2,
+            )
+
         fig, ax = plt.subplots(figsize=(6, 3), dpi=200)
-    
-        x = np.reshape(np.array(airfoil.x()), -1)
-        y = np.reshape(np.array(airfoil.y()), -1)
-    
-        ax.plot(airfoil.x(), y, ".-", color="#280887", zorder=11)
-        ax.fill(x, y, color="#280887", alpha=0.2, zorder=10)
+
+        x_root = np.reshape(np.array(root_airfoil.x()), -1)
+        y_root = np.reshape(np.array(root_airfoil.y()), -1)
+
+        ax.plot(x_root, y_root, ".-", color="#280887", zorder=11, label="Root")
+        ax.fill(x_root, y_root, color="#280887", alpha=0.2, zorder=10)
+
+        if tip_airfoil is not None:
+            x_tip = np.reshape(np.array(tip_airfoil.x()), -1)
+            y_tip = np.reshape(np.array(tip_airfoil.y()), -1)
+            ax.plot(x_tip, y_tip, ".-", color="#2a9d8f", zorder=13, label="Tip")
+            ax.fill(x_tip, y_tip, color="#2a9d8f", alpha=0.2, zorder=12)
+            ax.legend(loc="upper right", fontsize=8, frameon=False)
         
         ax.text(
             0.02, 0.95, f"{len(self.frames)}", 

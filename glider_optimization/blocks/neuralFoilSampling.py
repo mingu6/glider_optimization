@@ -155,20 +155,32 @@ class NeuralFoilSampling(Block):
                 self._e_llt_mirror_of = torch.as_tensor(comp_e["mirror_of"], dtype=torch.long, device=self.device)
 
                 # Fixed elevator airfoil -> fixed Kulfan params
-                # Prefer YAML plane.elevator.airfoil over checkpoint metadata
+                # Prefer YAML plane.elevator.kulfan over names when provided,
+                # otherwise fall back to YAML plane.elevator.airfoil then checkpoint metadata.
                 plane_elev = getattr(getattr(self.config, "plane", None), "elevator", None)
 
-                if plane_elev is not None and getattr(plane_elev, "airfoil", None) is not None:
+                if plane_elev is not None and getattr(plane_elev, "kulfan", None) is not None:
+                    elev_kulfan = getattr(plane_elev, "kulfan")
+                    self._e_kulfan_upper = torch.as_tensor(elev_kulfan.upper_weights, dtype=torch.float32, device=self.device)
+                    self._e_kulfan_lower = torch.as_tensor(elev_kulfan.lower_weights, dtype=torch.float32, device=self.device)
+                    self._e_kulfan_LE = torch.as_tensor(float(getattr(elev_kulfan, "leading_edge_weight", 0.0)), dtype=torch.float32, device=self.device)
+                    self._e_kulfan_TE = torch.as_tensor(float(getattr(elev_kulfan, "TE_thickness", 0.0)), dtype=torch.float32, device=self.device)
+                elif plane_elev is not None and getattr(plane_elev, "airfoil", None) is not None:
                     elev_airfoil_name_raw = getattr(plane_elev, "airfoil")
+                    elev_airfoil_name = elev_airfoil_name_raw.lower().replace("_", "").replace(" ", "")
+                    elev_k = asb.Airfoil(elev_airfoil_name).to_kulfan_airfoil()
+                    self._e_kulfan_upper = torch.as_tensor(elev_k.upper_weights, dtype=torch.float32, device=self.device)
+                    self._e_kulfan_lower = torch.as_tensor(elev_k.lower_weights, dtype=torch.float32, device=self.device)
+                    self._e_kulfan_LE = torch.as_tensor(float(getattr(elev_k, "leading_edge_weight", 0.0)), dtype=torch.float32, device=self.device)
+                    self._e_kulfan_TE = torch.as_tensor(float(getattr(elev_k, "TE_thickness", 0.0)), dtype=torch.float32, device=self.device)
                 else:
                     elev_airfoil_name_raw = elev.get("airfoil", "naca0012")
-
-                elev_airfoil_name = elev_airfoil_name_raw.lower().replace("_", "").replace(" ", "")
-                elev_k = asb.Airfoil(elev_airfoil_name).to_kulfan_airfoil()
-                self._e_kulfan_upper = torch.as_tensor(elev_k.upper_weights, dtype=torch.float32, device=self.device)
-                self._e_kulfan_lower = torch.as_tensor(elev_k.lower_weights, dtype=torch.float32, device=self.device)
-                self._e_kulfan_LE = torch.as_tensor(float(getattr(elev_k, "leading_edge_weight", 0.0)), dtype=torch.float32, device=self.device)
-                self._e_kulfan_TE = torch.as_tensor(float(getattr(elev_k, "TE_thickness", 0.0)), dtype=torch.float32, device=self.device)
+                    elev_airfoil_name = elev_airfoil_name_raw.lower().replace("_", "").replace(" ", "")
+                    elev_k = asb.Airfoil(elev_airfoil_name).to_kulfan_airfoil()
+                    self._e_kulfan_upper = torch.as_tensor(elev_k.upper_weights, dtype=torch.float32, device=self.device)
+                    self._e_kulfan_lower = torch.as_tensor(elev_k.lower_weights, dtype=torch.float32, device=self.device)
+                    self._e_kulfan_LE = torch.as_tensor(float(getattr(elev_k, "leading_edge_weight", 0.0)), dtype=torch.float32, device=self.device)
+                    self._e_kulfan_TE = torch.as_tensor(float(getattr(elev_k, "TE_thickness", 0.0)), dtype=torch.float32, device=self.device)
 
     #@override
     # def _eval_3d_llt(self, upper, lower, LE, TE, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
@@ -446,12 +458,41 @@ class NeuralFoilSampling(Block):
         upper = self._last_input["upper_weights"]
         lower = self._last_input["lower_weights"]
         LE = self._last_input["leading_edge_weight"]
-        TE = self._last_input["TE_thickness"]        
-                
+        TE = self._last_input["TE_thickness"]
+
+        optimize_tip = bool(
+            self.use_3d_llt_wing
+            and ("upper_weights_tip" in self._last_input)
+            and ("lower_weights_tip" in self._last_input)
+            and ("leading_edge_weight_tip" in self._last_input)
+            and ("TE_thickness_tip" in self._last_input)
+        )
+
+        params = [upper, lower, LE, TE]
+        if optimize_tip:
+            upper_tip = self._last_input["upper_weights_tip"]
+            lower_tip = self._last_input["lower_weights_tip"]
+            LE_tip = self._last_input["leading_edge_weight_tip"]
+            TE_tip = self._last_input["TE_thickness_tip"]
+            params += [upper_tip, lower_tip, LE_tip, TE_tip]
+
         Y = torch.cat([CL, CD, CM], dim=0)
         
-        grad_lagrangian = torch.autograd.grad(constraint_lagrangian, [upper, lower, LE, TE], retain_graph = True )
-        grad = torch.autograd.grad(Y, [upper, lower, LE, TE], grad_outputs=dJ_dy.flatten())
+        grad_lagrangian = torch.autograd.grad(
+            constraint_lagrangian,
+            params,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        grad = torch.autograd.grad(
+            Y,
+            params,
+            grad_outputs=dJ_dy.flatten(),
+            allow_unused=True,
+        )
+
+        grad = [g if g is not None else torch.zeros_like(p) for g, p in zip(grad, params)]
+        grad_lagrangian = [g if g is not None else torch.zeros_like(p) for g, p in zip(grad_lagrangian, params)]
         
         if grad[0].isnan().any():
             self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[0]")
@@ -466,9 +507,19 @@ class NeuralFoilSampling(Block):
             self.lambda_conf += self.sigma * constraint_violation.mean().detach()
             self.lambda_clcd += self.sigma * violation_clcd.mean().detach()
             
-        return {
+        out = {
             "dupper_params": grad[0] + grad_lagrangian[0],
             "dlower_params": grad[1] + grad_lagrangian[1],
             "dleading_edge_param": grad[2] + grad_lagrangian[2],
             "dTE_thickness_param": grad[3] + grad_lagrangian[3],
         }
+
+        if optimize_tip:
+            out.update({
+                "dupper_params_tip": grad[4] + grad_lagrangian[4],
+                "dlower_params_tip": grad[5] + grad_lagrangian[5],
+                "dleading_edge_param_tip": grad[6] + grad_lagrangian[6],
+                "dTE_thickness_param_tip": grad[7] + grad_lagrangian[7],
+            })
+
+        return out

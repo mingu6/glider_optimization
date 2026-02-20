@@ -243,9 +243,11 @@ class OCP(Block):
         self.logger.info(f"🔍 Velocity floor: {v_floor} m/s, Symbolic epsilon: {sym_eps}")
 
         # 🔍 DEEP INVESTIGATION: Stage-wise term breakdown around observed blow-up
-        self._log_rollout_term_breakdown(auxvar_vector, start_stage=10, end_stage=14)
-        self._export_rollout_debug_csv(auxvar_vector, max_stage=16)
-        self._export_rollout_debug_full_csv(auxvar_vector, max_stage=16)
+        if getattr(self.config.io, "log_rollout_dynamics", True):
+            self._log_rollout_term_breakdown(auxvar_vector, start_stage=10, end_stage=14)
+        if getattr(self.config.io, "save_rollout_csv", True):
+            self._export_rollout_debug_csv(auxvar_vector, max_stage=16)
+            self._export_rollout_debug_full_csv(auxvar_vector, max_stage=16)
         
         # 🔍 DIAGNOSTIC: Optional debug switches (enable when investigating NaN)
         self.coc._debug_init_guess = False
@@ -259,7 +261,7 @@ class OCP(Block):
             
         num_iterations = self.config.run.max_outer_iters
         iteration = downstream_info["iteration"]
-        if iteration == 0 or iteration == (num_iterations - 1):
+        if getattr(self.config.io, "save_rollouts", True) and (iteration == 0 or iteration == (num_iterations - 1)):
             try: 
                 self.plot(iteration)
             except ValueError:

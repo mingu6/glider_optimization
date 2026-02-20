@@ -7,14 +7,13 @@ from glider_optimization.runner import Runner
 from glider_optimization.logger import setup_logging
 
 from argparse import ArgumentParser
-from pathlib import Path
-from typing import Optional
 
 def build_parser() -> ArgumentParser:
     p = ArgumentParser(prog="bilevel-airfoil")
     p.add_argument("--config", "-c", type=Path, required=True)
     p.add_argument("--run-name", "-n", type=str, default=None)
     p.add_argument("--resume", action="store_true")
+    p.add_argument("--resume-checkpoint", type=Path, default=None)
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--debug", action="store_true")
@@ -24,6 +23,11 @@ def parse_args(args: Optional[list] = None):
     return build_parser().parse_args(args)
 
 def _apply_overrides(cfg, args):
+    if args.resume:
+        cfg.run.continue_run = True
+    if args.resume_checkpoint is not None:
+        cfg.run.resume_checkpoint_path = str(args.resume_checkpoint)
+        cfg.run.continue_run = True
     if args.device is not None:
         cfg.run.device = args.device
     if args.seed is not None:

@@ -65,13 +65,14 @@ class GliderPerching :
     def initDyn(self):
         # set the global parameters
         m = 0.065
-        l_w_i = -0.005                                # vector to leading edge from total body center of mass
-        l_w_f = -0.015                                # vector to trailing edge from total body center of mass
-        l = 0.26+0.114125                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
+        l_w_i = -0.005                                # vector to leading edge from glider's origin
+        l_w_f = -0.015                                # vector to trailing edge from glider's origin
+        l = 0.26                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
+        l_3d = 0.344                                  # vector from wing leading edge to elevator hinge point (for 3D surrogate reference)
         l_e = 0.02                                    # distance from the hinge to the mean aerodynamic chord of the elevator
         rho = 1.225                                   # assume Standard sea-level air density
         m_f = 0.4 * m                                 # mass of fuselage
-        l_w = 0.5*(l_w_i+l_w_f)                       # mean aerodynamic chord location
+        l_w = 0.5*(l_w_i+l_w_f)                       # mean aerodynamic chord location of the wing (from body CoM)
         g = 9.81
         S_w = 0.158
         S_e = 0.017
@@ -102,8 +103,8 @@ class GliderPerching :
 
         m_w = 0.6 * m * S_w / (S_w + S_e)
         m_e = 0.6 * m * S_e / (S_w + S_e)
-        l_f = -(l_w * m_w + (l - l_e) * m_e) / m_f      # vector to fuselage CoM
-        I = m_w * l_w ** 2 + m_e * (l + l_e) ** 2 + m_f * l_f ** 2
+        l_f = -(l_w * m_w + (l + l_e) * m_e) / m_f      #“choose fuselage COM so that total COM is at 0" 
+        I = m_w * l_w ** 2 + m_e * (l + l_e) ** 2 + m_f * l_f ** 2 # then compute inertia about that origin
         chord = np.abs(l_w_f - l_w_i) # mean aerodynamic chord length
         
         # Declare system variables

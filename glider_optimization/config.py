@@ -8,6 +8,8 @@ class RunConfig(BaseModel):
     seed: int = 0
     device: str = "cpu"
     max_outer_iters: int = 50
+    continue_run: bool = False
+    resume_checkpoint_path: str | None = None
 
 class SpanwiseAirfoilConfig(BaseModel):
     """
@@ -148,6 +150,10 @@ class OCPConfig(BaseModel):
 class IOConfig(BaseModel):
     gif_fps: int = 1
     log_every: int = 1
+    save_rollouts: bool = True
+    save_rollout_csv: bool = True
+    log_rollout_dynamics: bool = True
+    log_airfoil_coeffs: bool = True
     checkpoint_dir: str
     metrics: list[str] = Field(default_factory=list)
     run_name: str = "run"
@@ -157,6 +163,22 @@ class IOConfig(BaseModel):
 class FlowConfig(BaseModel):
     rho: float = 1.225
     mu: float = 1.789e-5
+
+class KulfanSpecConfig(BaseModel):
+    upper_weights: np.ndarray
+    lower_weights: np.ndarray
+    leading_edge_weight: float = 0.0
+    TE_thickness: float = 0.0
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @field_validator("upper_weights", "lower_weights", mode="before")
+    @classmethod
+    def validate_kulfan_array(cls, v: Any) -> np.ndarray:
+        arr = np.array(v, dtype=float)
+        if arr.shape[0] != 8:
+            raise ValueError(f"{arr} must have exactly 8 elements")
+        return arr
 
 class SurfaceGeometryConfig(BaseModel):
     y_half: list[float]
@@ -172,6 +194,11 @@ class SurfaceGeometryConfig(BaseModel):
     # 3D-only spanwise wing airfoil names (optional)
     airfoil_root: str | None = None
     airfoil_tip: str | None = None
+
+    # Optional direct Kulfan definitions (override name-based initialization)
+    kulfan: KulfanSpecConfig | None = None
+    kulfan_root: KulfanSpecConfig | None = None
+    kulfan_tip: KulfanSpecConfig | None = None
 
     use_quarter_chord_ref: bool = True
 
