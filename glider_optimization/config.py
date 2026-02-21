@@ -1,7 +1,7 @@
 from pathlib import Path
 import yaml
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field, field_validator
 import numpy as np
 
@@ -50,14 +50,22 @@ class NeuralFoilSamplingConfig(BaseModel):
     # Optional: upgrade 2D sampling to 3D LLT
     use_3d_llt: bool = False
 
-    # Path to aero_rom checkpoint (contains wing geometry + flow used to invert Re -> V)
-    llt_ckpt_path: str = "aero_rom/artifacts/models/3d_blocks.pt"
+    # Wing geometry (half-span stations)
+    llt_y_half: List[float] = Field(default_factory=lambda: [0.0, 0.30])
+    llt_c_half: List[float] = Field(default_factory=lambda: [0.113, 0.083])
+    llt_xle_half: List[float] = Field(default_factory=lambda: [0.0, 0.0])
+    llt_twist_half: List[float] = Field(default_factory=lambda: [0.0, 0.0])
 
-    # Optional overrides (if None, fall back to checkpoint values)
-    llt_n_iter: int | None = None
-    llt_beta: float | None = None
-    llt_tol: float | None = None
-    llt_enforce_symmetry: bool | None = None
+    # Physical constants
+    llt_rho_air: float = 1.225
+    llt_mu_air: float = 1.789e-5
+
+    # Solver settings
+    llt_n_iter: int = 30
+    llt_max_iter: int = 200
+    llt_beta: float = 0.5
+    llt_tol: float = 1e-5
+    llt_enforce_symmetry: bool = True
 
     # cuNF size used inside LLT (defaults to neuralFoil_size)
     llt_model_size: str | None = None

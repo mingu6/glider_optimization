@@ -2,28 +2,71 @@ from ..blockBase import Block
 from typing import override
 from ..config import Config
 from ..utils.cu_kulfan_airfoil import get_aero_from_kulfan_parameters_cuda
+from ..utils.llt import build_llt_system
 from typing import Dict, Any
 import torch
 from math import sqrt   
 import logging
 import numpy as np
 import wandb
+from ..utils.llt import LLTImplicitFn, _MODEL_SIZE_TO_ID, _DEVICE_TO_ID
 
-class NeuralFoilSampling(Block):
+
+class NeuralFoilSampling3D(Block):
     @override
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging
         self.device = torch.device(config.run.device)
         nfConfig = self.config.neuralFoilSampling
+       
+        #TODO move in cfg
+        y_half = [0.0, 0.30]
+        c_half = [0.113, 0.083]
+        xle_half = [0.0,0.0]
+        twist_half = [0.0,0.0]
+       
+        comp = build_llt_system(y_half, c_half, xle_half, twist_half)
+
+        self.llt_dy      = torch.as_tensor(comp["dy"],        dtype=torch.float32, device = self.device)
+        self.llt_y       = torch.as_tensor(comp["y_mid"],     dtype=torch.float32, device = self.device)
+        self.llt_c       = torch.as_tensor(comp["c_mid"],     dtype=torch.float32, device = self.device)
+        self.llt_tw      = torch.as_tensor(comp["tw_mid"],    dtype=torch.float32, device = self.device)
+        self.llt_S       = torch.as_tensor(comp["S"],         dtype=torch.float32, device = self.device)
+        self.llt_cbar    = torch.as_tensor(comp["cbar"],      dtype=torch.float32, device = self.device)
+        self.llt_x_c4    = torch.as_tensor(comp["x_c4_mid"],  dtype=torch.float32, device = self.device)
+        self.llt_span    = torch.as_tensor(comp["span"],      dtype=torch.float32, device = self.device)
+        self.llt_D_nf    = torch.as_tensor(comp["D_nf"],      dtype=torch.float32, device = self.device)
+        self.llt_D_tr    = torch.as_tensor(comp["D_tr"],      dtype=torch.float32, device = self.device)
+        self.llt_mirror  = torch.as_tensor(comp["mirror_of"], dtype=torch.long, device = self.device)
+
+        self.llt_eta = self.llt_y.abs() / self.llt_y.abs().max().clamp_min(1e-9)
+        self.llt_rho = torch.as_tensor(1.225, dtype=torch.float32, device = self.device)
+        self.llt_mu = torch.as_tensor(1.789e-5, dtype=torch.float32, device = self.device)
+        self.llt_model_size_id = torch.tensor(_MODEL_SIZE_TO_ID[self.config.neuralFoilSampling.neuralFoil_size], dtype=torch.int64, device = self.device)
+        self.llt_device_id = torch.tensor(_DEVICE_TO_ID[config.run.device], dtype=torch.int64, device = self.device)
+        
+        
+        # TODO: move into cfg 
+        beta = 0.40
+        tol = 1e-6
+        n_iter = 15
+        max_iter = 200
+        enforce_sym = True
+
+        self.llt_beta_t = torch.tensor(beta, dtype=torch.float32)
+        self.llt_tol_t = torch.tensor(tol, dtype=torch.float32)
+        self.llt_n_iter_t = torch.tensor(float(n_iter), dtype=torch.float32)
+        self.llt_max_iter_t = torch.tensor(float(max_iter), dtype=torch.float32)
+        self.llt_enforce_sym_t = torch.tensor(1.0 if enforce_sym else 0.0, dtype=torch.float32)
         
         def chebyshev_nodes(a, b, n):
             k = np.arange(n)
             return 0.5*(a+b) + 0.5*(b-a)*np.cos((2*k+1)/(2*n)*np.pi)
 
         n_1d = int(sqrt(nfConfig.n_samples))
-        aoa_1d = torch.tensor(chebyshev_nodes(nfConfig.AoA_min, nfConfig.AoA_max, n_1d), device=self.device)
-        re_1d  = torch.tensor(chebyshev_nodes(nfConfig.Re_min, nfConfig.Re_max, n_1d), device=self.device)
+        aoa_1d = torch.tensor(chebyshev_nodes(nfConfig.AoA_min, nfConfig.AoA_max, n_1d), dtype=torch.float32, device=self.device)
+        re_1d  = torch.tensor(chebyshev_nodes(nfConfig.Re_min, nfConfig.Re_max, n_1d), dtype=torch.float32, device=self.device)
         
         aoa, re = torch.meshgrid(aoa_1d, re_1d, indexing="ij")
         self.alpha_batch = aoa.reshape(-1)
@@ -43,6 +86,45 @@ class NeuralFoilSampling(Block):
         self.min_avg_Cl_Cd = nfConfig.min_avg_Cl_Cd
         self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
 
+
+    def _eval_3d_llt(
+        self,
+        upper,
+        lower,
+        LE,
+        TE,
+        alpha_deg: torch.Tensor,
+        Re_ref: torch.Tensor,
+        upper_tip=None,
+        lower_tip=None,
+        LE_tip=None,
+        TE_tip=None,
+    ):
+        """
+        Minimal 3D wrapper: LLTImplicitFn expects (alpha, V).
+        We map Re_ref -> V via V = Re_ref * mu / (rho * cbar).
+        """
+
+        eta = self.llt_eta  # (n_pan,)
+        upper = (1.0 - eta)[:, None] * upper[None, :] + eta[:, None] * upper_tip[None, :]
+        lower = (1.0 - eta)[:, None] * lower[None, :] + eta[:, None] * lower_tip[None, :]
+        LE = (1.0 - eta) * LE.reshape(-1)[0] + eta * LE_tip.reshape(-1)[0]
+        TE = (1.0 - eta) * TE.reshape(-1)[0] + eta * TE_tip.reshape(-1)[0]
+
+        V = Re_ref * (self.llt_mu / (self.llt_rho * self.llt_cbar))
+
+        C = LLTImplicitFn.apply(
+            alpha_deg.reshape(-1), V.reshape(-1),
+            upper, lower, LE.reshape(-1), TE.reshape(-1),
+            self.llt_dy, self.llt_y, self.llt_c, self.llt_tw, self.llt_S, self.llt_cbar,
+            self.llt_x_c4, self.llt_span,
+            self.llt_D_nf, self.llt_D_tr, self.llt_mirror,
+            self.llt_rho, self.llt_mu,
+            self.llt_beta_t, self.llt_tol_t, self.llt_n_iter_t, self.llt_max_iter_t, self.llt_enforce_sym_t,
+            self.llt_model_size_id, self.llt_device_id,
+        )
+        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2]}
+
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         B = self.alpha_batch.shape[0]
@@ -55,6 +137,19 @@ class NeuralFoilSampling(Block):
             "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B),
             "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B),
         }
+        
+        self._last_aero_coeff = self._eval_3d_llt(
+                downstream_info["upper_weights"],
+                downstream_info["lower_weights"],
+                downstream_info["leading_edge_weight"],
+                downstream_info["TE_thickness"],
+                self.alpha_batch,
+                self.Re_batch,
+                upper_tip=downstream_info["upper_weights_tip"],
+                lower_tip=downstream_info["lower_weights_tip"],
+                LE_tip=downstream_info["leading_edge_weight_tip"],
+                TE_tip=downstream_info["TE_thickness_tip"],
+            )   
    
         self._last_aero_coeff = get_aero_from_kulfan_parameters_cuda(
             kulfan_batch,
