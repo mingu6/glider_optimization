@@ -38,7 +38,7 @@ class NeuralFoilSampling3D(Block):
         self.llt_span    = torch.as_tensor(comp["span"],      dtype=torch.float32, device = self.device)
         self.llt_D_nf    = torch.as_tensor(comp["D_nf"],      dtype=torch.float32, device = self.device)
         self.llt_D_tr    = torch.as_tensor(comp["D_tr"],      dtype=torch.float32, device = self.device)
-        self.llt_mirror  = torch.as_tensor(comp["mirror_of"], dtype=torch.long, device = self.device)
+        self.llt_mirror  = torch.as_tensor(comp["mirror_of"], dtype=torch.long,    device = self.device)
 
         self.llt_eta = self.llt_y.abs() / self.llt_y.abs().max().clamp_min(1e-9)
         self.llt_rho = torch.as_tensor(1.225, dtype=torch.float32, device = self.device)
@@ -256,20 +256,21 @@ class NeuralFoilSampling3D(Block):
         lower = self._last_input["lower_weights"]
         LE = self._last_input["leading_edge_weight"]
         TE = self._last_input["TE_thickness"]        
+        upper_tip = self._last_input["upper_weights_tip"]
+        lower_tip = self._last_input["lower_weights_tip"]
+        LE_tip = self._last_input["leading_edge_weight_tip"]
+        TE_tip = self._last_input["TE_thickness_tip"]
+        
+        params = [upper, lower, LE, TE, upper_tip, lower_tip, LE_tip, TE_tip]
                 
         Y = torch.cat([CL, CD, CM], dim=0)
         
-        grad_lagrangian = torch.autograd.grad(constraint_lagrangian, [upper, lower, LE, TE], retain_graph = True )
-        grad = torch.autograd.grad(Y, [upper, lower, LE, TE], grad_outputs=dJ_dy.flatten())
+        grad_lagrangian = torch.autograd.grad(constraint_lagrangian, params, retain_graph = True)
+        grad = torch.autograd.grad(Y, params, grad_outputs=dJ_dy.flatten())
         
-        if grad[0].isnan().any():
-            self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[0]")
-        if grad[1].isnan().any():
-            self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[1]")
-        if grad[2].isnan().any():
-            self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[2]")
-        if grad[3].isnan().any():
-            self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[3]")
+        for i, g in enumerate(grad):
+            if g.isnan().any():
+                self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[{i}]")
             
         with torch.no_grad():
             self.lambda_conf += self.rho * constraint_violation.mean().detach()
@@ -280,6 +281,10 @@ class NeuralFoilSampling3D(Block):
             "dlower_params": grad[1] + grad_lagrangian[1],
             "dleading_edge_param": grad[2] + grad_lagrangian[2],
             "dTE_thickness_param": grad[3] + grad_lagrangian[3],
+            "dupper_params_tip": grad[4] + grad_lagrangian[4],
+            "dlower_params_tip": grad[5] + grad_lagrangian[5],
+            "dleading_edge_param_tip": grad[6] + grad_lagrangian[6],
+            "dTE_thickness_param_tip": grad[7] + grad_lagrangian[7],
         }
         
     def resume(self, checkpoint):

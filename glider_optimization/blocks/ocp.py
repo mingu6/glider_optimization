@@ -143,8 +143,8 @@ class OCP(Block):
         if iteration % log_every == 0 or iteration == (num_iterations - 1):
             self.plot_static(iteration)
             
-        if iteration == 0 or iteration == (num_iterations - 1):
-            self.plot_animations(iteration)
+        #if iteration == 0 or iteration == (num_iterations - 1):
+        #    self.plot_animations(iteration)
 
         end_time = time.perf_counter()
         forward_time = end_time - start_time

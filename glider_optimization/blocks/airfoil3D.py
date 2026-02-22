@@ -135,6 +135,10 @@ class Airfoil3D(Block):
         self.lower_params.grad = upstream_grads["dlower_params"]
         self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
         self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]
+        self.upper_params_tip.grad = upstream_grads["dupper_params_tip"]
+        self.lower_params_tip.grad = upstream_grads["dlower_params_tip"]
+        self.leading_edge_param_tip.grad = upstream_grads["dleading_edge_param_tip"]
+        self.TE_thickness_param_tip.grad = upstream_grads["dTE_thickness_param_tip"]
 
     def _step_scheduler(self):
         if self.scheduler is None:
@@ -147,11 +151,18 @@ class Airfoil3D(Block):
 
     def _enforce_constraints(self):
         with torch.no_grad():
-            self.TE_thickness_param.clamp_(1e-4, 0.01)
+            self.TE_thickness_param.clamp_(0, 0.01)
+            self.TE_thickness_param_tip.clamp_(0, 0.01)
+            
             min_gap = 0.05
+            
             self.upper_params.data = torch.maximum(
                 self.upper_params.data,
                 self.lower_params.data + min_gap
+            )
+            self.upper_params_tip.data = torch.maximum(
+                self.upper_params_tip.data,
+                self.lower_params_tip.data + min_gap
             )
 
     def plot(self):
