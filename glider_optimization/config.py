@@ -209,6 +209,7 @@ class DynConfig(BaseModel):
     l_w_i: float = -0.005
     l_w_f: float = -0.015
     l: float = 0.26
+    l_3d: float = 0.344
     l_e: float = 0.02
 
 class PlaneConfig(BaseModel):

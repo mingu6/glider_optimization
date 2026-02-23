@@ -68,7 +68,7 @@ class GliderPerching :
         l_w_i = -0.005                                # vector to leading edge from glider's origin
         l_w_f = -0.015                                # vector to trailing edge from glider's origin
         l = 0.26                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
-        l_3d = 0.344                                  # vector from wing leading edge to elevator hinge point (for 3D surrogate reference)
+        l_3d = float(getattr(getattr(self.config.plane, "dyn", object()), "l_3d", 0.344))
         l_e = 0.02                                    # distance from the hinge to the mean aerodynamic chord of the elevator
         rho = 1.225                                   # assume Standard sea-level air density
         m_f = 0.4 * m                                 # mass of fuselage
