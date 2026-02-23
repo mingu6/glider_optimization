@@ -242,7 +242,7 @@ class NeuralFoilSampling(Block):
             self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_max_iter_t, self._llt_enforce_sym_t,
             self._llt_model_size_id, self._llt_device_id,
         )
-        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2]}
+        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2], "_C": C}
 
 
     def _eval_3d_llt_elevator_fixed(self, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
@@ -426,6 +426,8 @@ class NeuralFoilSampling(Block):
         CL = self._last_aero_coeff["CL"]
         CD = self._last_aero_coeff["CD"]
         CM = self._last_aero_coeff["CM"]
+        self.logger.info(f"C.grad_fn={C.grad_fn}")
+        conf = self._last_aero_coeff["analysis_confidence"]
         conf = self._last_aero_coeff["analysis_confidence"]
         
         constraint = self.min_confidence - conf.mean() 
@@ -478,17 +480,28 @@ class NeuralFoilSampling(Block):
 
         Y = torch.cat([CL, CD, CM], dim=0)
         
+        # grad_lagrangian = torch.autograd.grad(
+        #     constraint_lagrangian,
+        #     params,
+        #     retain_graph=True,
+        #     allow_unused=True,
+        # )
+        # grad = torch.autograd.grad(
+        #     Y,
+        #     params,
+        #     grad_outputs=dJ_dy.flatten(),
+        #     allow_unused=True,
+        # )
+
         grad_lagrangian = torch.autograd.grad(
             constraint_lagrangian,
             params,
             retain_graph=True,
-            allow_unused=True,
         )
         grad = torch.autograd.grad(
             Y,
             params,
             grad_outputs=dJ_dy.flatten(),
-            allow_unused=True,
         )
 
         grad = [g if g is not None else torch.zeros_like(p) for g, p in zip(grad, params)]
