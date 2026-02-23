@@ -232,7 +232,7 @@ class NeuralFoilSampling(Block):
 
         V = Re_ref * (self._llt_mu / (self._llt_rho * self._llt_cbar))
 
-        C = _LLTImplicitFn.apply(
+        C, alpha_eff_pan, Re_pan = _LLTImplicitFn.apply(
             alpha_deg.reshape(-1), V.reshape(-1),
             upper, lower, LE.reshape(-1), TE.reshape(-1),
             self._llt_dy, self._llt_y, self._llt_c, self._llt_tw, self._llt_S, self._llt_cbar,
@@ -242,14 +242,73 @@ class NeuralFoilSampling(Block):
             self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_max_iter_t, self._llt_enforce_sym_t,
             self._llt_model_size_id, self._llt_device_id,
         )
-        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2], "_C": C}
+        # --- Per-panel confidence (spanwise) via one extra cuNeuralFoil call ---
+        B, n_pan = alpha_eff_pan.shape
+        BN = B * n_pan
+
+        alpha_flat = alpha_eff_pan.reshape(-1)
+        Re_flat = Re_pan.reshape(-1)
+
+        # Build per-query Kulfan batch, matching implicit_llt._eval_nf_batched broadcasting rules
+        if upper.ndim == 1:
+            upper_batch = upper.unsqueeze(0).expand(BN, -1)
+            lower_batch = lower.unsqueeze(0).expand(BN, -1)
+
+            LE0 = LE.reshape(-1)[0]
+            TE0 = TE.reshape(-1)[0]
+            LE_batch = LE0.expand(BN)
+            TE_batch = TE0.expand(BN)
+
+        elif upper.ndim == 2:
+            # (n_pan, 8) -> (B, n_pan, 8) -> (BN, 8)
+            upper_batch = upper.unsqueeze(0).expand(B, -1, -1).reshape(BN, -1)
+            lower_batch = lower.unsqueeze(0).expand(B, -1, -1).reshape(BN, -1)
+
+            LEv = LE.reshape(-1)
+            TEv = TE.reshape(-1)
+            if LEv.numel() == 1:
+                LE_pan = LEv[0].expand(n_pan)
+            else:
+                LE_pan = LEv
+            if TEv.numel() == 1:
+                TE_pan = TEv[0].expand(n_pan)
+            else:
+                TE_pan = TEv
+
+            LE_batch = LE_pan.unsqueeze(0).expand(B, -1).reshape(BN)
+            TE_batch = TE_pan.unsqueeze(0).expand(B, -1).reshape(BN)
+
+        else:
+            raise ValueError(f"Unexpected upper.ndim={upper.ndim} for Kulfan weights")
+
+        kulfan_conf = {
+            "upper_weights_cuda": upper_batch,
+            "lower_weights_cuda": lower_batch,
+            "leading_edge_weight_cuda": LE_batch,
+            "TE_thickness_cuda": TE_batch,
+        }
+
+        aero_conf = get_aero_from_kulfan_parameters_cuda(
+            kulfan_conf,
+            alpha_flat,
+            Re_flat,
+            device=self.device,
+            model_size=self.config.neuralFoilSampling.neuralFoil_size,
+        )
+        conf_flat = aero_conf.get("analysis_confidence", torch.ones_like(alpha_flat))
+        conf_pan = conf_flat.view(B, n_pan)
+
+        # Aggregate conservatively 
+        conf_min = conf_pan.min(dim=1).values  # (B,)
+
+        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2], "analysis_confidence": conf_min}
 
 
     def _eval_3d_llt_elevator_fixed(self, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
         """3D elevator LLT evaluation using fixed (cached) Kulfan parameters."""
         V = Re_ref * (self._llt_mu / (self._llt_rho * self._e_llt_cbar))
 
-        C = _LLTImplicitFn.apply(
+        C, _, _ = _LLTImplicitFn.apply(
             alpha_deg.reshape(-1), V.reshape(-1),
             self._e_kulfan_upper, self._e_kulfan_lower,
             self._e_kulfan_LE.reshape(-1), self._e_kulfan_TE.reshape(-1),
@@ -311,14 +370,14 @@ class NeuralFoilSampling(Block):
                     self.Re_batch,
                 )
 
-            conf2d = get_aero_from_kulfan_parameters_cuda(
-                kulfan_batch,
-                self.alpha_batch,
-                self.Re_batch,
-                device=self.device,
-                model_size=self.config.neuralFoilSampling.neuralFoil_size,
-            ).get("analysis_confidence", torch.ones_like(self.alpha_batch))
-            self._last_aero_coeff["analysis_confidence"] = conf2d
+            # conf2d = get_aero_from_kulfan_parameters_cuda(
+            #     kulfan_batch,
+            #     self.alpha_batch,
+            #     self.Re_batch,
+            #     device=self.device,
+            #     model_size=self.config.neuralFoilSampling.neuralFoil_size,
+            # ).get("analysis_confidence", torch.ones_like(self.alpha_batch))
+            # self._last_aero_coeff["analysis_confidence"] = conf2d
 
             # Fixed-elevator 3D coefficients: compute once and cache (no gradient needed).
             if self.use_3d_llt_elevator and hasattr(self, "_e_llt_cbar") and (not self._elevator_cached):
@@ -386,14 +445,14 @@ class NeuralFoilSampling(Block):
                 self.alpha_val,
                 self.Re_val,
             )
-            val_conf2d = get_aero_from_kulfan_parameters_cuda(
-                kulfan_batch_val,
-                self.alpha_val,
-                self.Re_val,
-                device=self.device,
-                model_size=self.config.neuralFoilSampling.neuralFoil_size,
-            ).get("analysis_confidence", torch.ones_like(self.alpha_val))
-            val_aero["analysis_confidence"] = val_conf2d
+            # val_conf2d = get_aero_from_kulfan_parameters_cuda(
+            #     kulfan_batch_val,
+            #     self.alpha_val,
+            #     self.Re_val,
+            #     device=self.device,
+            #     model_size=self.config.neuralFoilSampling.neuralFoil_size,
+            # ).get("analysis_confidence", torch.ones_like(self.alpha_val))
+            # val_aero["analysis_confidence"] = val_conf2d
         else:
             val_aero = get_aero_from_kulfan_parameters_cuda(
                 kulfan_batch_val,

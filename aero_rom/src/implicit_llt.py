@@ -412,7 +412,22 @@ class LLTImplicitFn(torch.autograd.Function):
 
             Gamma_star = Gamma
             C = _compute_coeffs(Gamma_star, alpha2, V2, upper, lower, LE, TE, const)
-            
+
+            # --- Panel-wise conditions used for NF (for confidence diagnostics) ---
+            tw0 = const.tw.unsqueeze(0)           # (1, n_pan)
+            c0  = const.c.unsqueeze(0)            # (1, n_pan)
+
+            # induced normal velocity at panels (same as in _compute_coeffs)
+            w_nf = Gamma_star @ const.D_nf.T      # (B, n_pan)
+
+            alpha_geo = alpha2 + tw0              # (B, n_pan)
+            alpha_eff_pan = alpha_geo - torch.rad2deg(torch.atan2(w_nf, V2))  # (B, n_pan)
+            Re_pan = const.rho * V2 * c0 / const.mu                            # (B, n_pan)
+
+            # detach: confidence is a diagnostic / constraint input, not part of implicit adjoint
+            alpha_eff_pan_out = alpha_eff_pan.detach()
+            Re_pan_out = Re_pan.detach()
+
             # Store final residual for backward pass decision
             ctx.final_residual = final_rel_diff
             
@@ -428,10 +443,10 @@ class LLTImplicitFn(torch.autograd.Function):
             dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
             beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
         )
-        return C  # (B,3)
+        return C, alpha_eff_pan_out, Re_pan_out  # (B,3), (B,n_pan), (B,n_pan)
 
     @staticmethod
-    def backward(ctx, grad_C: torch.Tensor):
+    def backward(ctx, grad_C: torch.Tensor, grad_alpha_eff_pan=None, grad_Re_pan=None):
         """
         Matrix-free implicit backward using GMRES on (dF/dGamma)^T lambda = dL/dGamma.
 
