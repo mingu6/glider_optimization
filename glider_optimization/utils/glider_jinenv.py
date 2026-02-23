@@ -140,16 +140,21 @@ class GliderPerching :
                 ckpt = torch.load(getattr(nfConfig, "llt_ckpt_path", ""), map_location="cpu")
                 cent = ckpt.get("centroid", {}) if isinstance(ckpt, dict) else {}
 
+                # 3D anchor convention:
+                # - l_w_i is body-frame x of wing leading edge
+                # - l_3d is wing-LE -> elevator-LE distance in x
+                x_w_le = float(l_w_i)
+                x_e_le = float(l_w_i + l_3d)
+
                 # Wing centroid
                 if "wing_x" in cent:
-                    com_w_x = float(cent["wing_x"])
+                    com_w_x = float(x_w_le + cent["wing_x"])
                 if "wing_z" in cent:
                     com_w_z = float(cent["wing_z"])
 
                 # Elevator centroid
                 if "elevator_x" in cent:
-                    # Keep 2D-style hinge offset convention: com_e_x = l + local elevator centroid x
-                    com_e_x = float(l + cent["elevator_x"])
+                    com_e_x = float(x_e_le + cent["elevator_x"])
                 if "elevator_z" in cent:
                     com_e_z = float(cent["elevator_z"])
 
@@ -158,11 +163,23 @@ class GliderPerching :
         else:
             # 2D mode
             com_e_z = com_w_z
+
+        # In 3D mode, recenter aerodynamic centroids so the full plane centroid
+        # (wing + elevator + fuselage) is exactly at the body origin (0, 0).
+        # This keeps centroids fixed while enforcing a zero-centered reference.
+        if getattr(nfConfig, "use_3d_llt", False):
+            com_a_x_raw = (com_w_x * m_w + com_e_x * m_e + l_f * m_f) / (m_w + m_e + m_f)
+            com_a_z_raw = (com_w_z * m_w + com_e_z * m_e + 0.0 * m_f) / (m_w + m_e + m_f)
+
+            com_w_x -= com_a_x_raw
+            com_w_z -= com_a_z_raw
+            com_e_x -= com_a_x_raw
+            com_e_z -= com_a_z_raw
         
         com_f = l_f
         com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
         if getattr(nfConfig, "use_3d_llt", False):
-            com_a_x = (com_w_x*m_w + com_e_x*m_e + com_f*m_f) / (m_w + m_e + m_f)
+            com_a_x = 0.0
         else:
             com_a_x = com_a   # keep old behavior
 
