@@ -299,9 +299,10 @@ class NeuralFoilSampling(Block):
         conf_pan = conf_flat.view(B, n_pan)
 
         # Aggregate conservatively 
-        conf_min = conf_pan.min(dim=1).values  # (B,)
+        # conf_min = conf_pan.min(dim=1).values  # (B,)
+        conf_mean = conf_pan.mean(dim=1)
 
-        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2], "analysis_confidence": conf_min}
+        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2], "analysis_confidence": conf_mean}
 
 
     def _eval_3d_llt_elevator_fixed(self, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
