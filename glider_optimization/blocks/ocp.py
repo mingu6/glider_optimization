@@ -143,8 +143,11 @@ class OCP(Block):
         if iteration % log_every == 0 or iteration == (num_iterations - 1):
             self.plot_static(iteration)
             
-        if iteration == 0 or iteration == (num_iterations - 1):
-            self.plot_animations(iteration)
+        for i, traj in enumerate(self.last_trajs): 
+            np.save(f"traj_{i}_{iteration}.npy", traj['state_traj_opt'])
+            
+        #if iteration == 0 or iteration == (num_iterations - 1):
+        #    self.plot_animations(iteration)   
 
         end_time = time.perf_counter()
         forward_time = end_time - start_time

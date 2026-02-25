@@ -183,6 +183,8 @@ class GliderPerching :
 
         err = self.X - self.goal
         self.path_cost = wu * (self.U * self.U) + err.T @ diag(state_weights)*stage_scale @ err 
+        if self.config.evaluation.mode == EvaluationMode.SoftLanding:
+            self.path_cost += 0.1*pow(err[6],2)
         self.dpath_cost_dx = gradient(self.path_cost, self.X)
         self.dpath_cost_du = gradient(self.path_cost, self.U)
         

@@ -153,16 +153,6 @@ class Airfoil(Block):
         ax.plot(airfoil.x(), y, ".-", color="#280887", zorder=11)
         ax.fill(x, y, color="#280887", alpha=0.2, zorder=10)
         
-        ax.text(
-            0.02, 0.95, f"{len(self.frames)}", 
-            transform=ax.transAxes, 
-            fontsize=24, 
-            fontweight="bold", 
-            color="red",
-            va="top", 
-            ha="left"
-        )
-        
         ax.axis("off")
         ax.set_aspect(1.0, adjustable="datalim")
         

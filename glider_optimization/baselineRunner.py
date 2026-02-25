@@ -126,7 +126,7 @@ class BaselineRunner:
                 [self.config.airfoil.TE_thickness]
             )
             
-            sigma = 0.1
+            sigma = 0.05
 
             genome = [
                 np.clip(g + random.gauss(0, sigma * (hi - lo)), lo, hi)

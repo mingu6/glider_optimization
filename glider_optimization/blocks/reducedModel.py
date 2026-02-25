@@ -46,14 +46,6 @@ class ReducedModel(Block):
         if "val_alpha" in downstream_info:
             self._validate_model(downstream_info, coeffs_CL, coeffs_CD, coeffs_CM, nfConfig)
         
-        #pred_CL = self._cheb_X @ coeffs_CL
-        #self.plot(CL.cpu(), Re.cpu(), alpha.cpu(), coeffs_CL.cpu(), "CL approximation", "CL", downstream_info["iteration"])
-        #pred_CD = self._cheb_X @ coeffs_CD
-        #self.plot(CD.cpu(), Re.cpu(), alpha.cpu(), coeffs_CD.cpu(), "CD approximation", "CD", downstream_info["iteration"])
-        #pred_CM = self._cheb_X @ coeffs_CM
-        #self.plot(CM.cpu(), Re.cpu(), alpha.cpu(), coeffs_CM.cpu(), "CM approximation", "CM", downstream_info["iteration"])
-        #exit(0)
-        
         return {
             "phi_CL": coeffs_CL,
             "phi_CD": coeffs_CD,
