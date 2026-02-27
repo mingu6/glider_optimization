@@ -17,6 +17,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import time
+from math import sqrt
 
 def solve_worker(config: Config, 
                  init_state: List[float], 
@@ -134,6 +135,8 @@ class OCP(Block):
         failures = sum(1 for r in results if not r["success"])
         if failures > 0:
             self.logger.warning(f"⚠️ {failures}/{num_states} IPOPT solves failed")
+
+        self._log_flight_conditions(downstream_info["iteration"])
             
         num_iterations = self.config.run.max_outer_iters
         iteration = downstream_info["iteration"]
@@ -159,6 +162,106 @@ class OCP(Block):
             "iteration": downstream_info["iteration"],
             "augmented_lagrangian": downstream_info["augmented_lagrangian"] 
         }
+
+    def _chebyshev_nodes(self, a: float, b: float, n: int) -> np.ndarray:
+        k = np.arange(n)
+        return 0.5 * (a + b) + 0.5 * (b - a) * np.cos((2 * k + 1) / (2 * n) * np.pi)
+
+    def _log_flight_conditions(self, iteration: int) -> None:
+        out_dir = Path(self.config.io.checkpoint_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / "flight_conditions.log"
+
+        if not out_file.exists():
+            with out_file.open("w", encoding="utf-8") as f:
+                f.write("flight_conditions.log\n")
+                f.write("Per-iteration flight-condition diagnostics (file-only).\n")
+                f.write("- alpha_grid_deg: Chebyshev AoA axis used to build AoA-Re mesh\n")
+                f.write("- re_grid: Chebyshev Reynolds axis used to build AoA-Re mesh\n")
+                f.write("- velocity_*: [vx, vz, |v|] from wing reference-point velocity\n")
+                f.write("- alpha_*_deg: alpha = theta - atan2(vz, vx) in degrees\n")
+                f.write("- at(traj, idx, x, z): trajectory id, point index, and state position\n")
+
+        nf = self.config.neuralFoilSampling
+        n_1d = int(sqrt(nf.n_samples))
+        aoa_grid = self._chebyshev_nodes(float(nf.AoA_min), float(nf.AoA_max), n_1d) if n_1d > 0 else np.array([])
+        re_grid = self._chebyshev_nodes(float(nf.Re_min), float(nf.Re_max), n_1d) if n_1d > 0 else np.array([])
+
+        l_w_i = -0.005
+        l_w_f = -0.015
+        l_w_m = 0.5 * (l_w_i + l_w_f)
+
+        points = []
+        for traj_idx, traj in enumerate(self.last_trajs):
+            states = traj.get("state_traj_opt")
+            if states is None:
+                continue
+            states = np.asarray(states)
+            if states.ndim != 2 or states.shape[1] < 8 or states.shape[0] == 0:
+                continue
+
+            x = states[:, 0]
+            z = states[:, 1]
+            theta = states[:, 2]
+            xdot = states[:, 4]
+            zdot = states[:, 5]
+            thetadot = states[:, 6]
+
+            vx = xdot + l_w_m * thetadot * np.sin(theta)
+            vz = zdot - l_w_m * thetadot * np.cos(theta)
+            speed = np.sqrt(vx * vx + vz * vz)
+            alpha_deg = np.rad2deg(theta - np.arctan2(vz, vx))
+
+            for i in range(states.shape[0]):
+                points.append((traj_idx, i, x[i], z[i], vx[i], vz[i], speed[i], alpha_deg[i]))
+
+        with out_file.open("a", encoding="utf-8") as f:
+            f.write("=" * 88 + "\n")
+            f.write(f"iteration={iteration}\n")
+            f.write(f"grid_n_samples={int(nf.n_samples)} n_1d={n_1d} grid_points={n_1d * n_1d}\n")
+
+            if aoa_grid.size > 0:
+                aoa_text = ", ".join(f"{v:.6f}" for v in aoa_grid.tolist())
+                f.write(f"alpha_grid_deg=[{aoa_text}]\n")
+            else:
+                f.write("alpha_grid_deg=[]\n")
+
+            if re_grid.size > 0:
+                re_text = ", ".join(f"{v:.6f}" for v in re_grid.tolist())
+                f.write(f"re_grid=[{re_text}]\n")
+            else:
+                f.write("re_grid=[]\n")
+
+            if not points:
+                f.write("trajectory_stats=unavailable (no state_traj_opt data)\n")
+                return
+
+            speeds = np.array([p[6] for p in points], dtype=float)
+            alphas = np.array([p[7] for p in points], dtype=float)
+
+            p_vmin = points[int(np.argmin(speeds))]
+            p_vmax = points[int(np.argmax(speeds))]
+            p_amin = points[int(np.argmin(alphas))]
+            p_amax = points[int(np.argmax(alphas))]
+
+            f.write(
+                "velocity_min[vx,vz,|v|]="
+                f"[{p_vmin[4]:.6f}, {p_vmin[5]:.6f}, {p_vmin[6]:.6f}] "
+                f"at(traj={p_vmin[0]}, idx={p_vmin[1]}, x={p_vmin[2]:.6f}, z={p_vmin[3]:.6f})\n"
+            )
+            f.write(
+                "velocity_max[vx,vz,|v|]="
+                f"[{p_vmax[4]:.6f}, {p_vmax[5]:.6f}, {p_vmax[6]:.6f}] "
+                f"at(traj={p_vmax[0]}, idx={p_vmax[1]}, x={p_vmax[2]:.6f}, z={p_vmax[3]:.6f})\n"
+            )
+            f.write(
+                f"alpha_min_deg={p_amin[7]:.6f} "
+                f"at(traj={p_amin[0]}, idx={p_amin[1]}, x={p_amin[2]:.6f}, z={p_amin[3]:.6f})\n"
+            )
+            f.write(
+                f"alpha_max_deg={p_amax[7]:.6f} "
+                f"at(traj={p_amax[0]}, idx={p_amax[1]}, x={p_amax[2]:.6f}, z={p_amax[3]:.6f})\n"
+            )
     
     @override
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:

@@ -45,7 +45,7 @@ class NeuralFoilSamplingConfig(BaseModel):
     n_samples: int = 100
     min_confidence: float = 0.7
     min_avg_Cl_Cd: float = 2.0
-    rho: float = 10.0
+    rho: float = 1.0
 
     # Optional: upgrade 2D sampling to 3D LLT
     use_3d_llt: bool = False

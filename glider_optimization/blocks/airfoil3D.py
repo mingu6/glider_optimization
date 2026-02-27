@@ -240,8 +240,8 @@ class Airfoil3D(Block):
 
     def plot(self):
         airfoilConfig = self.config.airfoil
-        airfoil = asb.KulfanAirfoil(
-            name=self.config.io.run_name + "_airfoil",
+        airfoil_root = asb.KulfanAirfoil(
+            name=self.config.io.run_name + "_airfoil_root",
             lower_weights=self.lower_params.detach().numpy(),
             upper_weights=self.upper_params.detach().numpy(),
             leading_edge_weight=self.leading_edge_param.detach().numpy(),
@@ -250,13 +250,30 @@ class Airfoil3D(Block):
             N2=airfoilConfig.N2,
         )
 
+        airfoil_tip = asb.KulfanAirfoil(
+            name=self.config.io.run_name + "_airfoil_tip",
+            lower_weights=self.lower_params_tip.detach().numpy(),
+            upper_weights=self.upper_params_tip.detach().numpy(),
+            leading_edge_weight=self.leading_edge_param_tip.detach().numpy(),
+            TE_thickness=self.TE_thickness_param_tip.detach().numpy(),
+            N1=airfoilConfig.N1,
+            N2=airfoilConfig.N2,
+        )
+
         fig, ax = plt.subplots(figsize=(6, 3), dpi=200)
-    
-        x = np.reshape(np.array(airfoil.x()), -1)
-        y = np.reshape(np.array(airfoil.y()), -1)
-    
-        ax.plot(airfoil.x(), y, ".-", color="#280887", zorder=11)
-        ax.fill(x, y, color="#280887", alpha=0.2, zorder=10)
+
+        x_root = np.reshape(np.array(airfoil_root.x()), -1)
+        y_root = np.reshape(np.array(airfoil_root.y()), -1)
+        x_tip = np.reshape(np.array(airfoil_tip.x()), -1)
+        y_tip = np.reshape(np.array(airfoil_tip.y()), -1)
+
+        ax.plot(x_root, y_root, ".-", color="#280887", zorder=11, label="Root")
+        ax.fill(x_root, y_root, color="#280887", alpha=0.2, zorder=10)
+
+        ax.plot(x_tip, y_tip, ".-", color="#d97706", zorder=13, label="Tip")
+        ax.fill(x_tip, y_tip, color="#d97706", alpha=0.15, zorder=12)
+
+        ax.legend(loc="upper right", frameon=False)
         
         ax.text(
             0.02, 0.95, f"{len(self.frames)}", 
