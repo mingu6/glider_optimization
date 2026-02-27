@@ -249,7 +249,7 @@ class COCsys:
         J = J + self.final_cost_fn(Xk, auxvar_value)
 
         # Create an NLP solver and solve
-        opts = {'ipopt.print_level': print_level, 'ipopt.sb': 'yes', 'print_time': print_level, 'ipopt.max_iter': 1000}
+        opts = {'ipopt.print_level': print_level, 'ipopt.sb': 'yes', 'print_time': print_level}
         if warm_start and hasattr(self, 'w_opt_prev') and self.w_opt_prev is not None:
             opts.update({'ipopt.warm_start_init_point': 'yes',
                          'ipopt.warm_start_bound_push': 1e-6,
