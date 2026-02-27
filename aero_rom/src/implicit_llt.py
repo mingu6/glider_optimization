@@ -66,7 +66,6 @@ class LLTConst:
     S: torch.Tensor
     cbar: torch.Tensor
     x_c4: torch.Tensor
-    xref: torch.Tensor
     span: torch.Tensor
     D_nf: torch.Tensor
     D_tr: torch.Tensor
@@ -108,10 +107,49 @@ def _eval_nf_batched(
     BN = alpha_flat.numel()
 
     # expand (no data copy; gradients accumulate correctly)
-    upper_batch = upper.unsqueeze(0).expand(BN, -1)
-    lower_batch = lower.unsqueeze(0).expand(BN, -1)
-    LE_batch = LE.expand(BN)
-    TE_batch = TE.expand(BN)
+    # Expand parameters to (BN, ...) for a single cuNeuralFoil call.
+    # Supports either:
+    #   - global airfoil: upper/lower (8,), LE/TE scalar or (1,)
+    #   - per-panel airfoil: upper/lower (n_pan, 8), LE/TE (n_pan,) or scalar
+    if upper.ndim == 1:
+        # global airfoil -> broadcast to all panels
+        upper_batch = upper.unsqueeze(0).expand(BN, -1)
+        lower_batch = lower.unsqueeze(0).expand(BN, -1)
+
+        LE0 = LE.reshape(-1)[0]
+        TE0 = TE.reshape(-1)[0]
+        LE_batch = LE0.expand(BN)
+        TE_batch = TE0.expand(BN)
+
+    elif upper.ndim == 2:
+        if upper.shape[0] != n_pan or lower.shape[0] != n_pan:
+            raise ValueError(
+                f"Per-panel Kulfan must have shape (n_pan, 8); got upper {tuple(upper.shape)}, "
+                f"lower {tuple(lower.shape)} with n_pan={n_pan}"
+            )
+
+        # (n_pan, 8) -> (B, n_pan, 8) -> (BN, 8)
+        upper_batch = upper.unsqueeze(0).expand(B, -1, -1).reshape(BN, -1)
+        lower_batch = lower.unsqueeze(0).expand(B, -1, -1).reshape(BN, -1)
+
+        def _to_pan(v):
+            v = v.reshape(-1)
+            if v.numel() == 1:
+                return v[0].expand(n_pan)
+            if v.numel() == n_pan:
+                return v
+            raise ValueError(
+                f"Per-panel LE/TE must be scalar or (n_pan,), got {tuple(v.shape)} with n_pan={n_pan}"
+            )
+
+        LE_pan = _to_pan(LE)
+        TE_pan = _to_pan(TE)
+
+        LE_batch = LE_pan.unsqueeze(0).expand(B, -1).reshape(BN)
+        TE_batch = TE_pan.unsqueeze(0).expand(B, -1).reshape(BN)
+
+    else:
+        raise ValueError(f"Unsupported upper.ndim={upper.ndim}; expected 1 (global) or 2 (per-panel)")
 
     kulfan_batch = {
         "upper_weights_cuda": upper_batch,
@@ -240,11 +278,9 @@ def _compute_coeffs(
     CL = L / denom
     CD = D / denom
 
-    # Pitch about xref
+    # Pitching moment about the quarter-chord line (NeuralFoil CM is about c/4)
     Mprime_c4 = q * (c ** 2) * cm
-    dx = x_c4 - const.xref
-    MxF_y = -(dx * Lp)
-    M_pitch = torch.sum((Mprime_c4 + MxF_y) * dy, dim=-1)
+    M_pitch = torch.sum(Mprime_c4 * dy, dim=-1)
 
     denom_pitch = (q.squeeze(-1) * const.S * const.cbar).clamp_min(1e-30)
     CM = M_pitch / denom_pitch
@@ -275,7 +311,6 @@ class LLTImplicitFn(torch.autograd.Function):
         S: torch.Tensor,
         cbar: torch.Tensor,
         x_c4: torch.Tensor,
-        xref: torch.Tensor,
         span: torch.Tensor,
         D_nf: torch.Tensor,
         D_tr: torch.Tensor,
@@ -285,6 +320,7 @@ class LLTImplicitFn(torch.autograd.Function):
         beta_t: torch.Tensor,
         tol_t: torch.Tensor,
         n_iter_t: torch.Tensor,
+        max_iter_t: torch.Tensor,
         enforce_sym_t: torch.Tensor,
         model_size_id: torch.Tensor,
         device_id: torch.Tensor,
@@ -295,7 +331,7 @@ class LLTImplicitFn(torch.autograd.Function):
         ctx.device_id = int(device_id.item())
 
         const = LLTConst(
-            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, xref=xref, span=span,
+            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, span=span,
             D_nf=D_nf, D_tr=D_tr, mirror_of=mirror_of,
             rho=rho, mu=mu,
             n_iter=int(n_iter_t.item()),
@@ -319,28 +355,98 @@ class LLTImplicitFn(torch.autograd.Function):
             aero0 = _eval_nf_batched(upper, lower, LE, TE, alpha_geo, Re, const)
             Gamma = 0.5 * V2 * c0 * aero0["CL"]  # (B,n_pan)
 
-            for _ in range(const.n_iter):
+            # Adaptive convergence: try n_iter first, then continue up to max_iter
+            max_iter = int(max_iter_t.item())
+            n_iter = const.n_iter
+            converged = False
+            final_rel_diff = float('inf')
+            residual_history = []  # 🔍 Track residual for gradient analysis
+            
+            for iter_idx in range(max_iter):
                 Gamma_new = _G(Gamma, alpha2, V2, upper, lower, LE, TE, const)
                 diff = torch.max(torch.abs(Gamma_new - Gamma))
                 denom = torch.max(torch.tensor(1.0, device=Gamma.device), torch.max(torch.abs(Gamma)))
-                if (diff / denom).item() < const.tol:
+                rel_diff = (diff / denom).item()
+                final_rel_diff = rel_diff
+                
+                # 🔍 Track residual history for gradient analysis
+                residual_history.append(rel_diff)
+                
+                if rel_diff < const.tol:
                     Gamma = Gamma_new
+                    converged = True
+                    if iter_idx < n_iter:
+                        print(f"🔍 LLT converged at iteration {iter_idx+1}/{n_iter}, rel_diff={rel_diff:.2e}")
+                    else:
+                        print(f"🔍 LLT converged at iteration {iter_idx+1}/{max_iter} (adaptive), rel_diff={rel_diff:.2e}")
                     break
                 Gamma = Gamma_new
+            
+            # 🔍 Store convergence info for backward pass decision
+            ctx.converged = converged
+            ctx.actual_iters = iter_idx + 1 if converged else max_iter
+            ctx.residual_history = residual_history
+            
+            # 🔍 DIAGNOSTIC: Analyze residual gradient to find optimal clipping point
+            if len(residual_history) >= 10:
+                # Compute recent gradient (last 5 iterations)
+                recent_gradient = abs(residual_history[-1] - residual_history[-5]) / 5
+                ctx.residual_gradient = recent_gradient
+                
+                # Also compute mid-range gradient (around iteration 15-20)
+                if len(residual_history) >= 20:
+                    mid_gradient = abs(residual_history[19] - residual_history[14]) / 5
+                    print(f"🔍 Residual gradients: recent={recent_gradient:.2e}, mid (iter 15-20)={mid_gradient:.2e}")
+            else:
+                ctx.residual_gradient = float('inf')
+            
+            if not converged:
+                # Find which samples didn't converge
+                diff_per_sample = torch.max(torch.abs(Gamma_new - Gamma), dim=1)[0]
+                worst_idx = torch.argmax(diff_per_sample).item()
+                worst_alpha = alpha2[worst_idx, 0].item()
+                worst_V = V2[worst_idx, 0].item()
+                worst_Re = (const.rho * worst_V * const.c.mean() / const.mu).item()
+                print(f"⚠️  LLT did NOT converge after {max_iter} iterations, final rel_diff={final_rel_diff:.2e}")
+                print(f"    Worst sample: AoA={worst_alpha:.1f}°, V={worst_V:.2f} m/s, Re≈{worst_Re:.0f}")
 
             Gamma_star = Gamma
             C = _compute_coeffs(Gamma_star, alpha2, V2, upper, lower, LE, TE, const)
 
+            # --- Panel-wise conditions used for NF (for confidence diagnostics) ---
+            tw0 = const.tw.unsqueeze(0)           # (1, n_pan)
+            c0  = const.c.unsqueeze(0)            # (1, n_pan)
+
+            # induced normal velocity at panels (same as in _compute_coeffs)
+            w_nf = Gamma_star @ const.D_nf.T      # (B, n_pan)
+
+            alpha_geo = alpha2 + tw0              # (B, n_pan)
+            alpha_eff_pan = alpha_geo - torch.rad2deg(torch.atan2(w_nf, V2))  # (B, n_pan)
+            Re_pan = const.rho * V2 * c0 / const.mu                            # (B, n_pan)
+
+            # detach: confidence is a diagnostic / constraint input, not part of implicit adjoint
+            alpha_eff_pan_out = alpha_eff_pan.detach()
+            Re_pan_out = Re_pan.detach()
+
+            # Store final residual for backward pass decision
+            ctx.final_residual = final_rel_diff
+            
+            # DIAGNOSTIC: Check for NaN/Inf in coefficients
+            if not torch.isfinite(C).all():
+                print(f"🚨 LLT produced non-finite coefficients!")
+                print(f"   C stats: min={C.min().item():.6f}, max={C.max().item():.6f}")
+                print(f"   Gamma stats: min={Gamma_star.min().item():.6f}, max={Gamma_star.max().item():.6f}")
+
         ctx.save_for_backward(
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
-            dy, y, c, tw, S, cbar, x_c4, xref, span, D_nf, D_tr, mirror_of, rho, mu,
-            beta_t, tol_t, n_iter_t, enforce_sym_t
+            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
+            beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
         )
-        return C  # (B,3)
+        return C, alpha_eff_pan_out, Re_pan_out  # (B,3), (B,n_pan), (B,n_pan)
 
     @staticmethod
-    def backward(ctx, grad_C: torch.Tensor):
+    def backward(ctx, grad_C: torch.Tensor, grad_alpha_eff_pan=None, grad_Re_pan=None):
         """
         Matrix-free implicit backward using GMRES on (dF/dGamma)^T lambda = dL/dGamma.
 
@@ -357,13 +463,13 @@ class LLTImplicitFn(torch.autograd.Function):
         (
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
-            dy, y, c, tw, S, cbar, x_c4, xref, span, D_nf, D_tr, mirror_of, rho, mu,
-            beta_t, tol_t, n_iter_t, enforce_sym_t
+            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
+            beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
         ) = saved
 
         model_size = _ID_TO_MODEL_SIZE[int(ctx.model_size_id)]
         const = LLTConst(
-            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, xref=xref, span=span,
+            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, span=span,
             D_nf=D_nf, D_tr=D_tr, mirror_of=mirror_of,
             rho=rho, mu=mu,
             n_iter=int(n_iter_t.item()),
@@ -581,6 +687,7 @@ class LLTImplicitFn(torch.autograd.Function):
             g_upper, g_lower, g_LE, g_TE = out_grads
 
         # Return grads aligned with forward() inputs of LLTImplicitFn.apply(...)
+        # Updated to include max_iter_t parameter (one more None)
         return (
             None,  # alpha
             None,  # V
@@ -588,8 +695,8 @@ class LLTImplicitFn(torch.autograd.Function):
             g_lower,
             g_LE,
             g_TE,
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None
         )
 
 
@@ -607,6 +714,7 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
         computation_params: dict,
         airflow: dict,
         n_iter: int = 30,
+        max_iter: int | None = None,
         beta: float = 0.40,
         tol: float = 1e-4,
         enforce_symmetry: bool = True,
@@ -637,7 +745,6 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
         self.S = torch.as_tensor(computation_params["S"], dtype=torch.float32, device=self.device)
         self.cbar = torch.as_tensor(computation_params["cbar"], dtype=torch.float32, device=self.device)
         self.x_c4 = torch.as_tensor(computation_params["x_c4_mid"], dtype=torch.float32, device=self.device)
-        self.xref = torch.as_tensor(computation_params["x_ref"], dtype=torch.float32, device=self.device)
         self.span = torch.as_tensor(computation_params["span"], dtype=torch.float32, device=self.device)
 
         self.D_nf = torch.as_tensor(computation_params["D_nf"], dtype=torch.float32, device=self.device)
@@ -650,6 +757,7 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
         self.beta_t = torch.tensor(float(beta), dtype=torch.float32, device=self.device)
         self.tol_t = torch.tensor(float(tol), dtype=torch.float32, device=self.device)
         self.n_iter_t = torch.tensor(int(n_iter), dtype=torch.float32, device=self.device)
+        self.max_iter_t = torch.tensor(int(max_iter if max_iter is not None else n_iter), dtype=torch.float32, device=self.device)
         self.enforce_sym_t = torch.tensor(1.0 if enforce_symmetry else 0.0, dtype=torch.float32, device=self.device)
 
         self.model_size_id = torch.tensor(_MODEL_SIZE_TO_ID[self.model_size], dtype=torch.int64, device=self.device)
@@ -662,10 +770,10 @@ class CuNFWeissingerLLTImplicit(torch.nn.Module):
         C = LLTImplicitFn.apply(
             alpha, V,
             self.upper, self.lower, self.LE, self.TE,
-            self.dy, self.y, self.c, self.tw, self.S, self.cbar, self.x_c4, self.xref, self.span,
+            self.dy, self.y, self.c, self.tw, self.S, self.cbar, self.x_c4, self.span,
             self.D_nf, self.D_tr, self.mirror_of,
             self.rho, self.mu,
-            self.beta_t, self.tol_t, self.n_iter_t, self.enforce_sym_t,
+            self.beta_t, self.tol_t, self.n_iter_t, self.max_iter_t, self.enforce_sym_t,
             self.model_size_id, self.device_id
         )  # (B,3)
 

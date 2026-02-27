@@ -113,7 +113,7 @@ class NeuralFoilSampling3D(Block):
 
         V = Re_ref * (self.llt_mu / (self.llt_rho * self.llt_cbar))
 
-        C = LLTImplicitFn.apply(
+        C, alpha_eff_pan, Re_pan = LLTImplicitFn.apply(
             alpha_deg.reshape(-1), V.reshape(-1),
             upper, lower, LE.reshape(-1), TE.reshape(-1),
             self.llt_dy, self.llt_y, self.llt_c, self.llt_tw, self.llt_S, self.llt_cbar,
@@ -123,20 +123,81 @@ class NeuralFoilSampling3D(Block):
             self.llt_beta_t, self.llt_tol_t, self.llt_n_iter_t, self.llt_max_iter_t, self.llt_enforce_sym_t,
             self.llt_model_size_id, self.llt_device_id,
         )
-        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2]}
+
+        # --- Per-panel confidence (spanwise) via one extra cuNeuralFoil call ---
+        B, n_pan = alpha_eff_pan.shape
+        BN = B * n_pan
+
+        alpha_flat = alpha_eff_pan.reshape(-1)
+        Re_flat = Re_pan.reshape(-1)
+
+        # Build per-query Kulfan batch, matching implicit_llt._eval_nf_batched broadcasting rules
+        if upper.ndim == 1:
+            upper_batch = upper.unsqueeze(0).expand(BN, -1)
+            lower_batch = lower.unsqueeze(0).expand(BN, -1)
+
+            LE0 = LE.reshape(-1)[0]
+            TE0 = TE.reshape(-1)[0]
+            LE_batch = LE0.expand(BN)
+            TE_batch = TE0.expand(BN)
+
+        elif upper.ndim == 2:
+            # (n_pan, 8) -> (B, n_pan, 8) -> (BN, 8)
+            upper_batch = upper.unsqueeze(0).expand(B, -1, -1).reshape(BN, -1)
+            lower_batch = lower.unsqueeze(0).expand(B, -1, -1).reshape(BN, -1)
+
+            LEv = LE.reshape(-1)
+            TEv = TE.reshape(-1)
+            if LEv.numel() == 1:
+                LE_pan = LEv[0].expand(n_pan)
+            else:
+                LE_pan = LEv
+            if TEv.numel() == 1:
+                TE_pan = TEv[0].expand(n_pan)
+            else:
+                TE_pan = TEv
+
+            LE_batch = LE_pan.unsqueeze(0).expand(B, -1).reshape(BN)
+            TE_batch = TE_pan.unsqueeze(0).expand(B, -1).reshape(BN)
+
+        else:
+            raise ValueError(f"Unexpected upper.ndim={upper.ndim} for Kulfan weights")
+
+        kulfan_conf = {
+            "upper_weights_cuda": upper_batch,
+            "lower_weights_cuda": lower_batch,
+            "leading_edge_weight_cuda": LE_batch,
+            "TE_thickness_cuda": TE_batch,
+        }
+
+        aero_conf = get_aero_from_kulfan_parameters_cuda(
+            kulfan_conf,
+            alpha_flat,
+            Re_flat,
+            device=self.device,
+            model_size=self.config.neuralFoilSampling.neuralFoil_size,
+        )
+        conf_flat = aero_conf.get("analysis_confidence", torch.ones_like(alpha_flat))
+        conf_pan = conf_flat.view(B, n_pan)
+
+        # Aggregate conservatively 
+        # conf_min = conf_pan.min(dim=1).values  # (B,)
+        conf_mean = conf_pan.mean(dim=1)
+
+        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2], "analysis_confidence": conf_mean}
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
-        B = self.alpha_batch.shape[0]
+        # B = self.alpha_batch.shape[0]
         
         self._last_input = downstream_info
         
-        kulfan_batch = {
-            "upper_weights_cuda": downstream_info["upper_weights"].repeat(B, 1),
-            "lower_weights_cuda": downstream_info["lower_weights"].repeat(B, 1),
-            "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B),
-            "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B),
-        }
+        # kulfan_batch = {
+        #     "upper_weights_cuda": downstream_info["upper_weights"].repeat(B, 1),
+        #     "lower_weights_cuda": downstream_info["lower_weights"].repeat(B, 1),
+        #     "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B),
+        #     "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B),
+        # }
         
         self._last_aero_coeff = self._eval_3d_llt(
                 downstream_info["upper_weights"],
@@ -151,13 +212,13 @@ class NeuralFoilSampling3D(Block):
                 TE_tip=downstream_info["TE_thickness_tip"],
             )   
    
-        self._last_aero_coeff = get_aero_from_kulfan_parameters_cuda(
-            kulfan_batch,
-            self.alpha_batch,
-            self.Re_batch,
-            device=self.device,
-            model_size=self.config.neuralFoilSampling.neuralFoil_size,
-        )
+        # self._last_aero_coeff = get_aero_from_kulfan_parameters_cuda(
+        #     kulfan_batch,
+        #     self.alpha_batch,
+        #     self.Re_batch,
+        #     device=self.device,
+        #     model_size=self.config.neuralFoilSampling.neuralFoil_size,
+        # )
         conf = self._last_aero_coeff.get("analysis_confidence")
         try:
             conf_mean = float(conf.mean().detach().cpu().item())
