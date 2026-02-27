@@ -51,10 +51,10 @@ class NeuralFoilSamplingConfig(BaseModel):
     use_3d_llt: bool = False
 
     # Wing geometry (half-span stations)
-    llt_y_half: List[float] = Field(default_factory=lambda: [0.0, 0.30])
-    llt_c_half: List[float] = Field(default_factory=lambda: [0.113, 0.083])
-    llt_xle_half: List[float] = Field(default_factory=lambda: [0.0, 0.0])
-    llt_twist_half: List[float] = Field(default_factory=lambda: [0.0, 0.0])
+    llt_y_half: List[float] = Field(default_factory=lambda: [0.0, 0.105, 0.21, 0.315, 0.3675, 0.39375, 0.42])
+    llt_c_half: List[float] = Field(default_factory=lambda: [0.1875, 0.16875, 0.15, 0.13125, 0.121875, 0.117187, 0.1125])
+    llt_xle_half: List[float] = Field(default_factory=lambda: [0.0, 0.01875, 0.0375, 0.05625, 0.065625, 0.0703125, 0.075])
+    llt_twist_half: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
     # Physical constants
     llt_rho_air: float = 1.225

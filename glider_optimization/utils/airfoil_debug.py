@@ -151,3 +151,125 @@ def log_kulfan_parameters(
     with out_file.open("a", encoding="utf-8") as f:
         f.write(payload)
         f.write("\n")
+
+
+def log_backward_update(
+    iteration: int,
+    checkpoint_dir: str,
+    before_root_upper: Optional[torch.Tensor],
+    before_root_lower: Optional[torch.Tensor],
+    before_root_le: Optional[torch.Tensor],
+    before_root_te: Optional[torch.Tensor],
+    before_tip_upper: Optional[torch.Tensor],
+    before_tip_lower: Optional[torch.Tensor],
+    before_tip_le: Optional[torch.Tensor],
+    before_tip_te: Optional[torch.Tensor],
+    grad_root_upper: Optional[torch.Tensor],
+    grad_root_lower: Optional[torch.Tensor],
+    grad_root_le: Optional[torch.Tensor],
+    grad_root_te: Optional[torch.Tensor],
+    grad_tip_upper: Optional[torch.Tensor],
+    grad_tip_lower: Optional[torch.Tensor],
+    grad_tip_le: Optional[torch.Tensor],
+    grad_tip_te: Optional[torch.Tensor],
+    after_root_upper: Optional[torch.Tensor],
+    after_root_lower: Optional[torch.Tensor],
+    after_root_le: Optional[torch.Tensor],
+    after_root_te: Optional[torch.Tensor],
+    after_tip_upper: Optional[torch.Tensor],
+    after_tip_lower: Optional[torch.Tensor],
+    after_tip_le: Optional[torch.Tensor],
+    after_tip_te: Optional[torch.Tensor],
+) -> None:
+    if not _AIRFOIL_DEBUG_ENABLED:
+        return
+
+    def _arr(v: np.ndarray) -> str:
+        return np.array2string(v, precision=10, separator=", ", max_line_width=1_000_000)
+
+    def _delta(a: Optional[torch.Tensor], b: Optional[torch.Tensor]) -> np.ndarray:
+        if a is None or b is None:
+            return np.array([])
+        return _to_array(b) - _to_array(a)
+
+    before_root = _kulfan_dict(before_root_upper, before_root_lower, before_root_le, before_root_te)
+    before_tip = _kulfan_dict(before_tip_upper, before_tip_lower, before_tip_le, before_tip_te)
+    after_root = _kulfan_dict(after_root_upper, after_root_lower, after_root_le, after_root_te)
+    after_tip = _kulfan_dict(after_tip_upper, after_tip_lower, after_tip_le, after_tip_te)
+
+    grad_root = {
+        "upper_weights": _to_array(grad_root_upper),
+        "lower_weights": _to_array(grad_root_lower),
+        "leading_edge_weight": _to_array(grad_root_le),
+        "TE_thickness": _to_array(grad_root_te),
+    }
+    grad_tip = {
+        "upper_weights": _to_array(grad_tip_upper),
+        "lower_weights": _to_array(grad_tip_lower),
+        "leading_edge_weight": _to_array(grad_tip_le),
+        "TE_thickness": _to_array(grad_tip_te),
+    }
+
+    delta_root = {
+        "upper_weights": _delta(before_root_upper, after_root_upper),
+        "lower_weights": _delta(before_root_lower, after_root_lower),
+        "leading_edge_weight": _delta(before_root_le, after_root_le),
+        "TE_thickness": _delta(before_root_te, after_root_te),
+    }
+    delta_tip = {
+        "upper_weights": _delta(before_tip_upper, after_tip_upper),
+        "lower_weights": _delta(before_tip_lower, after_tip_lower),
+        "leading_edge_weight": _delta(before_tip_le, after_tip_le),
+        "TE_thickness": _delta(before_tip_te, after_tip_te),
+    }
+
+    lines = [
+        f"[airfoil-backward] iter={iteration}",
+        "root_before:",
+        f"  upper_weights: {_arr(before_root['upper_weights'])}",
+        f"  lower_weights: {_arr(before_root['lower_weights'])}",
+        f"  leading_edge_weight: {before_root['leading_edge_weight']}",
+        f"  TE_thickness: {before_root['TE_thickness']}",
+        "tip_before:",
+        f"  upper_weights: {_arr(before_tip['upper_weights'])}",
+        f"  lower_weights: {_arr(before_tip['lower_weights'])}",
+        f"  leading_edge_weight: {before_tip['leading_edge_weight']}",
+        f"  TE_thickness: {before_tip['TE_thickness']}",
+        "root_grad:",
+        f"  upper_weights: {_arr(grad_root['upper_weights'])}",
+        f"  lower_weights: {_arr(grad_root['lower_weights'])}",
+        f"  leading_edge_weight: {_arr(grad_root['leading_edge_weight'])}",
+        f"  TE_thickness: {_arr(grad_root['TE_thickness'])}",
+        "tip_grad:",
+        f"  upper_weights: {_arr(grad_tip['upper_weights'])}",
+        f"  lower_weights: {_arr(grad_tip['lower_weights'])}",
+        f"  leading_edge_weight: {_arr(grad_tip['leading_edge_weight'])}",
+        f"  TE_thickness: {_arr(grad_tip['TE_thickness'])}",
+        "root_after:",
+        f"  upper_weights: {_arr(after_root['upper_weights'])}",
+        f"  lower_weights: {_arr(after_root['lower_weights'])}",
+        f"  leading_edge_weight: {after_root['leading_edge_weight']}",
+        f"  TE_thickness: {after_root['TE_thickness']}",
+        "tip_after:",
+        f"  upper_weights: {_arr(after_tip['upper_weights'])}",
+        f"  lower_weights: {_arr(after_tip['lower_weights'])}",
+        f"  leading_edge_weight: {after_tip['leading_edge_weight']}",
+        f"  TE_thickness: {after_tip['TE_thickness']}",
+        "root_delta:",
+        f"  upper_weights: {_arr(delta_root['upper_weights'])}",
+        f"  lower_weights: {_arr(delta_root['lower_weights'])}",
+        f"  leading_edge_weight: {_arr(delta_root['leading_edge_weight'])}",
+        f"  TE_thickness: {_arr(delta_root['TE_thickness'])}",
+        "tip_delta:",
+        f"  upper_weights: {_arr(delta_tip['upper_weights'])}",
+        f"  lower_weights: {_arr(delta_tip['lower_weights'])}",
+        f"  leading_edge_weight: {_arr(delta_tip['leading_edge_weight'])}",
+        f"  TE_thickness: {_arr(delta_tip['TE_thickness'])}",
+        "",
+    ]
+
+    out_dir = Path(checkpoint_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "airfoil_backward_updates.log"
+    with out_file.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines))

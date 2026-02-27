@@ -15,7 +15,7 @@ import torch
 import torch.optim.lr_scheduler as lr_scheduler
 import wandb
 import logging
-from ..utils.airfoil_debug import log_kulfan_parameters, is_airfoil_debug_enabled
+from ..utils.airfoil_debug import log_kulfan_parameters, log_backward_update, is_airfoil_debug_enabled
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -36,6 +36,9 @@ class Airfoil3D(Block):
         self.lower_params_tip = nn.Parameter(torch.tensor(af_conf.lower_initial_weights, dtype=torch.float32))
         self.leading_edge_param_tip = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
         self.TE_thickness_param_tip = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
+
+        # with torch.no_grad():
+        #     self.upper_params_tip[0].add_(1e-4)
 
         self.optimizer = torch.optim.Adam(
             [
@@ -87,10 +90,61 @@ class Airfoil3D(Block):
         }
 
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
+        if is_airfoil_debug_enabled():
+            before_root_upper = self.upper_params.detach().clone()
+            before_root_lower = self.lower_params.detach().clone()
+            before_root_le = self.leading_edge_param.detach().clone()
+            before_root_te = self.TE_thickness_param.detach().clone()
+            before_tip_upper = self.upper_params_tip.detach().clone()
+            before_tip_lower = self.lower_params_tip.detach().clone()
+            before_tip_le = self.leading_edge_param_tip.detach().clone()
+            before_tip_te = self.TE_thickness_param_tip.detach().clone()
+
         self._apply_gradients(upstream_grads)
+
+        if is_airfoil_debug_enabled():
+            grad_root_upper = self.upper_params.grad.detach().clone() if self.upper_params.grad is not None else None
+            grad_root_lower = self.lower_params.grad.detach().clone() if self.lower_params.grad is not None else None
+            grad_root_le = self.leading_edge_param.grad.detach().clone() if self.leading_edge_param.grad is not None else None
+            grad_root_te = self.TE_thickness_param.grad.detach().clone() if self.TE_thickness_param.grad is not None else None
+            grad_tip_upper = self.upper_params_tip.grad.detach().clone() if self.upper_params_tip.grad is not None else None
+            grad_tip_lower = self.lower_params_tip.grad.detach().clone() if self.lower_params_tip.grad is not None else None
+            grad_tip_le = self.leading_edge_param_tip.grad.detach().clone() if self.leading_edge_param_tip.grad is not None else None
+            grad_tip_te = self.TE_thickness_param_tip.grad.detach().clone() if self.TE_thickness_param_tip.grad is not None else None
+
         self.optimizer.step()
         self._step_scheduler()
         self._enforce_constraints()
+
+        if is_airfoil_debug_enabled():
+            log_backward_update(
+                iteration=self._iter,
+                checkpoint_dir=self.config.io.checkpoint_dir,
+                before_root_upper=before_root_upper,
+                before_root_lower=before_root_lower,
+                before_root_le=before_root_le,
+                before_root_te=before_root_te,
+                before_tip_upper=before_tip_upper,
+                before_tip_lower=before_tip_lower,
+                before_tip_le=before_tip_le,
+                before_tip_te=before_tip_te,
+                grad_root_upper=grad_root_upper,
+                grad_root_lower=grad_root_lower,
+                grad_root_le=grad_root_le,
+                grad_root_te=grad_root_te,
+                grad_tip_upper=grad_tip_upper,
+                grad_tip_lower=grad_tip_lower,
+                grad_tip_le=grad_tip_le,
+                grad_tip_te=grad_tip_te,
+                after_root_upper=self.upper_params,
+                after_root_lower=self.lower_params,
+                after_root_le=self.leading_edge_param,
+                after_root_te=self.TE_thickness_param,
+                after_tip_upper=self.upper_params_tip,
+                after_tip_lower=self.lower_params_tip,
+                after_tip_le=self.leading_edge_param_tip,
+                after_tip_te=self.TE_thickness_param_tip,
+            )
         
         if self._iter == self.config.run.max_outer_iters - 1 and not self.config.io.wandb.enabled:
             self.save_gif(fps=self.config.io.gif_fps)

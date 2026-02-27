@@ -10,6 +10,8 @@ import logging
 import numpy as np
 import wandb
 from ..utils.llt import LLTImplicitFn, _MODEL_SIZE_TO_ID, _DEVICE_TO_ID
+from ..utils.airfoil_debug import is_airfoil_debug_enabled
+from pathlib import Path
 
 
 class NeuralFoilSampling3D(Block):
@@ -20,17 +22,22 @@ class NeuralFoilSampling3D(Block):
         self.device = torch.device(config.run.device)
         nfConfig = self.config.neuralFoilSampling
        
-        # TODO move in cfg
-        # Use >2 span stations so eta varies across panels (root/tip gradients differ).
-        n_span_stations = 7
-        y_half = np.linspace(0.0, 0.30, n_span_stations).tolist()
-        c_half = np.linspace(0.113, 0.083, n_span_stations).tolist()
+        #TODO move in cfg
+        # y_half = [0.0, 0.30]
+        # c_half = [0.113, 0.083]
+        # xle_half = [0.0,0.0]
+        # twist_half = [0.0,0.0]
+
+        n_span_stations = 3
+        y_half = np.linspace(0.0, 0.42, n_span_stations).tolist()
+        c_half = np.linspace(0.1875, 0.1125, n_span_stations).tolist()
         xle_half = np.zeros(n_span_stations, dtype=float).tolist()
         twist_half = np.zeros(n_span_stations, dtype=float).tolist()
-        # y_half=   [0,0.105,0.21,0.315,0.3675,0.39375,0.42]
-        # c_half=   [0.1875,0.16875,0.15,0.13125,0.121875,0.117187,0.1125]
-        # xle_half= [0,0.01875,0.0375,0.05625,0.065625,0.0703125,0.075]
-        # twist_half= [0, 0, 0, 0, 0, 0, 0]
+
+        # y_half = [float(v) for v in getattr(nfConfig, "llt_y_half", [0, 0.105, 0.21, 0.315, 0.3675, 0.39375, 0.42])]
+        # c_half = [float(v) for v in getattr(nfConfig, "llt_c_half", [0.1875, 0.16875, 0.15, 0.13125, 0.121875, 0.117187, 0.1125])]
+        # xle_half = [float(v) for v in getattr(nfConfig, "llt_xle_half", [0, 0.01875, 0.0375, 0.05625, 0.065625, 0.0703125, 0.075])]
+        # twist_half = [float(v) for v in getattr(nfConfig, "llt_twist_half", [0, 0, 0, 0, 0, 0, 0])]
        
         comp = build_llt_system(y_half, c_half, xle_half, twist_half)
 
@@ -55,10 +62,15 @@ class NeuralFoilSampling3D(Block):
         
         
         # TODO: move into cfg 
-        beta = 0.40
-        tol = 1e-6
-        n_iter = 15
-        max_iter = 200
+        # beta = 0.40
+        # tol = 1e-6
+        # n_iter = 15
+        # max_iter = 200
+
+        beta = float(getattr(nfConfig, "llt_beta", 0.30))
+        tol = float(getattr(nfConfig, "llt_tol", 1e-4))
+        n_iter = int(getattr(nfConfig, "llt_n_iter", 20))
+        max_iter = int(getattr(nfConfig, "llt_max_iter", 30))
         enforce_sym = True
 
         self.llt_beta_t = torch.tensor(beta, dtype=torch.float32)
@@ -93,6 +105,27 @@ class NeuralFoilSampling3D(Block):
         self.min_avg_Cl_Cd = nfConfig.min_avg_Cl_Cd
         self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
 
+    def _log_spanwise_mix(self, root_upper, tip_upper, mixed_upper, eta):
+        if not is_airfoil_debug_enabled():
+            return
+        if mixed_upper.ndim != 2 or mixed_upper.shape[0] == 0:
+            return
+        out_dir = Path(self.config.io.checkpoint_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / "airfoil_span_mix.log"
+        root0 = float(root_upper.reshape(-1)[0].detach().cpu().item())
+        tip0 = float(tip_upper.reshape(-1)[0].detach().cpu().item())
+        mid0 = float(mixed_upper[0, 0].detach().cpu().item())
+        midN = float(mixed_upper[-1, 0].detach().cpu().item())
+        eta_min = float(eta.min().detach().cpu().item())
+        eta_max = float(eta.max().detach().cpu().item())
+        with out_file.open("a", encoding="utf-8") as f:
+            f.write(
+                f"iter={self._current_iteration} root_upper0={root0:.10f} tip_upper0={tip0:.10f} "
+                f"mixed_upper0_panel0={mid0:.10f} mixed_upper0_panelN={midN:.10f} "
+                f"eta_min={eta_min:.6f} eta_max={eta_max:.6f}\n"
+            )
+
 
     def _eval_3d_llt(
         self,
@@ -113,10 +146,13 @@ class NeuralFoilSampling3D(Block):
         """
 
         eta = self.llt_eta  # (n_pan,)
+        root_upper = upper
+        tip_upper_ref = upper_tip
         upper = (1.0 - eta)[:, None] * upper[None, :] + eta[:, None] * upper_tip[None, :]
         lower = (1.0 - eta)[:, None] * lower[None, :] + eta[:, None] * lower_tip[None, :]
         LE = (1.0 - eta) * LE.reshape(-1)[0] + eta * LE_tip.reshape(-1)[0]
         TE = (1.0 - eta) * TE.reshape(-1)[0] + eta * TE_tip.reshape(-1)[0]
+        self._log_spanwise_mix(root_upper, tip_upper_ref, upper, eta)
 
         V = Re_ref * (self.llt_mu / (self.llt_rho * self.llt_cbar))
 
@@ -198,6 +234,7 @@ class NeuralFoilSampling3D(Block):
         # B = self.alpha_batch.shape[0]
         
         self._last_input = downstream_info
+        self._current_iteration = downstream_info["iteration"]
         
         # kulfan_batch = {
         #     "upper_weights_cuda": downstream_info["upper_weights"].repeat(B, 1),
