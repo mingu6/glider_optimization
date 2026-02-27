@@ -7,6 +7,7 @@ from glider_optimization.config import Config
 from glider_optimization.blockBase import Block
 from glider_optimization.blocks import Airfoil3D, NeuralFoilSampling3D, ReducedModel, OCP, Evaluation
 from .utils.resume import load_checkpoint_from_wandb
+from .utils.airfoil_debug import set_airfoil_debug_enabled
 
 
 class Runner:
@@ -77,6 +78,10 @@ class Runner:
         seed = self.config.run.seed
         np.random.seed(seed)
         random.seed(seed)
+
+        # Temporary debug switch: comment this line later to disable extra root/tip grad/weight logs.
+        set_airfoil_debug_enabled(True)
+
         self.logger.info(f"Environment initialized with seed {seed}")
         
     def _resume(self):

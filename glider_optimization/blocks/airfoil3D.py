@@ -14,6 +14,8 @@ import torch.nn as nn
 import torch
 import torch.optim.lr_scheduler as lr_scheduler
 import wandb
+import logging
+from ..utils.airfoil_debug import log_kulfan_parameters, is_airfoil_debug_enabled
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -21,6 +23,7 @@ class Airfoil3D(Block):
     @override
     def __init__(self, config: Config):
         self.config = config
+        self.logger = logging
         af_conf = self.config.airfoil
         self.device = torch.device(config.run.device)
         
@@ -49,6 +52,22 @@ class Airfoil3D(Block):
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         self._iter = downstream_info["iteration"]
+
+        if is_airfoil_debug_enabled() and (self._iter % self.config.io.log_every == 0):
+            log_kulfan_parameters(
+                iteration=self._iter,
+                stage="iteration_start",
+                logger=self.logger,
+                checkpoint_dir=self.config.io.checkpoint_dir,
+                root_upper=self.upper_params,
+                root_lower=self.lower_params,
+                root_le=self.leading_edge_param,
+                root_te=self.TE_thickness_param,
+                tip_upper=self.upper_params_tip,
+                tip_lower=self.lower_params_tip,
+                tip_le=self.leading_edge_param_tip,
+                tip_te=self.TE_thickness_param_tip,
+            )
 
         if self._iter % self.config.io.log_every == 0:
             self.plot()

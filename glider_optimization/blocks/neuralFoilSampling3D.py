@@ -20,11 +20,17 @@ class NeuralFoilSampling3D(Block):
         self.device = torch.device(config.run.device)
         nfConfig = self.config.neuralFoilSampling
        
-        #TODO move in cfg
-        y_half = [0.0, 0.30]
-        c_half = [0.113, 0.083]
-        xle_half = [0.0,0.0]
-        twist_half = [0.0,0.0]
+        # TODO move in cfg
+        # Use >2 span stations so eta varies across panels (root/tip gradients differ).
+        n_span_stations = 3
+        y_half = np.linspace(0.0, 0.30, n_span_stations).tolist()
+        c_half = np.linspace(0.113, 0.083, n_span_stations).tolist()
+        xle_half = np.zeros(n_span_stations, dtype=float).tolist()
+        twist_half = np.zeros(n_span_stations, dtype=float).tolist()
+        # y_half=   [0,0.105,0.21,0.315,0.3675,0.39375,0.42]
+        # c_half=   [0.1875,0.16875,0.15,0.13125,0.121875,0.117187,0.1125]
+        # xle_half= [0,0.01875,0.0375,0.05625,0.065625,0.0703125,0.075]
+        # twist_half= [0, 0, 0, 0, 0, 0, 0]
        
         comp = build_llt_system(y_half, c_half, xle_half, twist_half)
 
@@ -40,7 +46,8 @@ class NeuralFoilSampling3D(Block):
         self.llt_D_tr    = torch.as_tensor(comp["D_tr"],      dtype=torch.float32, device = self.device)
         self.llt_mirror  = torch.as_tensor(comp["mirror_of"], dtype=torch.long,    device = self.device)
 
-        self.llt_eta = self.llt_y.abs() / self.llt_y.abs().max().clamp_min(1e-9)
+        half_span = (self.llt_span * 0.5).clamp_min(1e-9)
+        self.llt_eta = (self.llt_y.abs() / half_span).clamp(0.0, 1.0)
         self.llt_rho = torch.as_tensor(1.225, dtype=torch.float32, device = self.device)
         self.llt_mu = torch.as_tensor(1.789e-5, dtype=torch.float32, device = self.device)
         self.llt_model_size_id = torch.tensor(_MODEL_SIZE_TO_ID[self.config.neuralFoilSampling.neuralFoil_size], dtype=torch.int64, device = self.device)
