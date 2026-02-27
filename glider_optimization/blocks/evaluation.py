@@ -54,7 +54,9 @@ class Evaluation(Block):
             self.cost_evolution.append(J)
 
         return {
-            "total_obj": total_obj
+            "total_obj": total_obj,
+            "cost": J,
+            "augmented_lagrangian": float(aug)
         }
     
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:        

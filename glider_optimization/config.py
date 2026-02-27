@@ -10,6 +10,11 @@ class RunConfig(BaseModel):
     device: str = "cpu"
     max_outer_iters: int = 50
     is_baseline: bool = False
+    cost_target: float | None = None
+    cost_target_min_iters: int = 0
+    cost_residual_tol: float | None = None
+    cost_residual_patience: int = 3
+    cost_residual_min_iters: int = 5
     
 class AirfoilConfig(BaseModel):
     lr: float = 1e-2
@@ -21,6 +26,11 @@ class AirfoilConfig(BaseModel):
     )
     leading_edge_weight: float = 0.0
     TE_thickness: float = 0.0
+    # Optional: separate initial parameters for tip (3D only).
+    upper_initial_weights_tip: np.ndarray | None = None
+    lower_initial_weights_tip: np.ndarray | None = None
+    leading_edge_weight_tip: float | None = None
+    TE_thickness_tip: float | None = None
     N1: float = 0.5
     N2: float = 1.0
     gamma: float = 0.99
@@ -28,14 +38,27 @@ class AirfoilConfig(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
     
 
-    @field_validator("upper_initial_weights", "lower_initial_weights", mode="before")
+    #@field_validator("upper_initial_weights", "lower_initial_weights", mode="before")
+    @field_validator(
+        "upper_initial_weights", "lower_initial_weights",
+        "upper_initial_weights_tip", "lower_initial_weights_tip",
+        mode="before"
+    )
+    # @classmethod
+    # def validate_array(cls, v: Any) -> np.ndarray:
+    #     arr = np.array(v, dtype=float)
+    #     if arr.shape[0] != 8:
+    #         raise ValueError(f"{arr} must have exactly 8 elements")
+    #     return arr
     @classmethod
-    def validate_array(cls, v: Any) -> np.ndarray:
+    def validate_array(cls, v: Any) -> np.ndarray | None:
+        if v is None:
+            return None
         arr = np.array(v, dtype=float)
         if arr.shape[0] != 8:
             raise ValueError(f"{arr} must have exactly 8 elements")
         return arr
-
+    
 class NeuralFoilSamplingConfig(BaseModel):
     neuralFoil_size: str = "xxxlarge"
     AoA_min: float = -10.0
@@ -44,7 +67,7 @@ class NeuralFoilSamplingConfig(BaseModel):
     Re_max: float = 6e5
     n_samples: int = 100
     min_confidence: float = 0.7
-    min_avg_Cl_Cd: float = 2.0
+    min_avg_Cl_Cd: float = 2.0 #2.5
     rho: float = 1.0
 
     # Optional: upgrade 2D sampling to 3D LLT
@@ -95,13 +118,25 @@ class OCPConfig(BaseModel):
     terminal_state_weight: list[float] = Field(
         default_factory = lambda: [10., 10., 5., 0.01, 5., 5., 2., 0.01]
     )
-    stage_control_weight: float = 0.1
+    stage_control_weight: float = 0.02 #0.1
+
+    # Backward-compatible fallback used when mode-specific lists are not provided
     initial_states: list[list[float]] = Field(
         default_factory= lambda : [[-8.5, 0 , 0. , 0., 6., 3. , 0., 0.01]]
+    )
+
+    # Preferred mode-specific initial conditions
+    initial_states_perching: list[list[float]] = Field(
+        default_factory=lambda: [[-8.5, 0.0, 0.0, 0.0, 6.0, 3.0, 0.0, 0.01]]
+    )
+    initial_states_softlanding: list[list[float]] = Field(
+        default_factory=lambda: [[-8.5, 1.0, 0.0, 0.0, 2.5, -1.0, 0.0, 0.01]]
     )
 class IOConfig(BaseModel):
     gif_fps: int = 1
     log_every: int = 1
+    static_plot_every: int = 5
+    airfoil_gif_every: int = 5
     checkpoint_dir: str
     metrics: list[str] = Field(default_factory=list)
     run_name: str = "run"
@@ -122,6 +157,7 @@ class Config(BaseModel):
     io: IOConfig
     ocp: OCPConfig = Field(default_factory=OCPConfig)
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    plane: dict[str, Any] = Field(default_factory=dict)
     
 def load_config(path: Path) -> Config:
     with path.open("r") as f:

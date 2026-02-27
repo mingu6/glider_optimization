@@ -16,6 +16,8 @@ class Runner:
         self.logger = logging
         self.wandb_enabled = config.io.wandb.enabled
         self._resume_from_checkpoint = config.io.wandb.checkpoint_run_id is not None and config.io.wandb.checkpoint_iteration is not None
+        self._cost_residual_counter = 0
+        self._prev_cost = None
         if self.wandb_enabled:
             self._init_wandb()
         
@@ -106,9 +108,19 @@ class Runner:
                 self.logger.info("=" * 100)
                 self.logger.info(f"Iteration {iteration}/{num_iterations}")
             
-            self._forward_pass(iteration)
+            fwd_data = self._forward_pass(iteration)
+
+            if self._should_stop_on_cost_target(iteration, fwd_data):
+                self.logger.info(f"Cost target reached at iteration {iteration}. Stopping early.")
+                break
+
             self._backward_pass(iteration)
+
+            if self._should_stop_on_cost_residual(iteration, fwd_data):
+                self.logger.info(f"Cost residual criterion reached at iteration {iteration}. Stopping early.")
+                break
         
+        self._plot_objective_if_needed()
         self.logger.info("Runner finished")
         if self.wandb_enabled:
             wandb.finish()
@@ -122,6 +134,7 @@ class Runner:
             data = block.forward(data)
         
         self.logger.debug("Outer loop forward pass completed")
+        return data
 
     def _backward_pass(self, iteration):
         self.logger.debug("Backward pass started")
@@ -132,3 +145,63 @@ class Runner:
             data = block.backward(data)
         
         self.logger.debug("Outer loop backward pass completed")
+
+    def _should_stop_on_cost_residual(self, iteration: int, fwd_data: dict) -> bool:
+        tol = getattr(self.config.run, "cost_residual_tol", None)
+        if tol is None:
+            return False
+
+        if "cost" not in fwd_data:
+            return False
+
+        current_cost = float(fwd_data["cost"])
+        if self._prev_cost is None:
+            self._prev_cost = current_cost
+            return False
+
+        residual = abs(current_cost - self._prev_cost)
+        self._prev_cost = current_cost
+
+        min_iters = max(0, int(getattr(self.config.run, "cost_residual_min_iters", 0)))
+        patience = max(1, int(getattr(self.config.run, "cost_residual_patience", 1)))
+
+        if residual < float(tol) and iteration >= min_iters:
+            self._cost_residual_counter += 1
+        else:
+            self._cost_residual_counter = 0
+
+        if iteration % self.config.io.log_every == 0:
+            self.logger.info(
+                f"Cost residual={residual:.6e}, tol={float(tol):.6e}, "
+                f"patience_counter={self._cost_residual_counter}/{patience}"
+            )
+
+        return self._cost_residual_counter >= patience
+
+    def _should_stop_on_cost_target(self, iteration: int, fwd_data: dict) -> bool:
+        target = getattr(self.config.run, "cost_target", None)
+        if target is None:
+            return False
+        if "cost" not in fwd_data:
+            return False
+
+        min_iters = max(0, int(getattr(self.config.run, "cost_target_min_iters", 0)))
+        if iteration < min_iters:
+            return False
+
+        current_cost = float(fwd_data["cost"])
+        if iteration % self.config.io.log_every == 0:
+            self.logger.info(f"Cost target check: cost={current_cost:.6f}, target={float(target):.6f}")
+
+        return current_cost <= float(target)
+
+    def _plot_objective_if_needed(self):
+        eval_block = self.blocks.get("Evaluation")
+        if eval_block is not None and not self.wandb_enabled:
+            try:
+                eval_block.plot_objective()
+            except Exception as exc:
+                self.logger.warning(f"Failed to save objective plots: {exc}")
+
+    def checkpoint_on_interrupt(self):
+        self._plot_objective_if_needed()

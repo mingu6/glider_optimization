@@ -6,8 +6,6 @@ from glider_optimization.config import load_config
 from glider_optimization.logger import setup_logging
 
 from argparse import ArgumentParser
-from pathlib import Path
-from typing import Optional
 
 def build_parser() -> ArgumentParser:
     p = ArgumentParser(prog="bilevel-airfoil")
@@ -40,10 +38,10 @@ def main(argv: Optional[list] = None) -> int:
     
     if cfg.run.is_baseline:
         from glider_optimization.baselineRunner import BaselineRunner as Runner 
+        runner = Runner(cfg)
     else:
         from glider_optimization.runner import Runner
-        
-    runner = Runner(cfg)
+        runner = Runner(cfg)
     try:
         runner.run()
     except KeyboardInterrupt:

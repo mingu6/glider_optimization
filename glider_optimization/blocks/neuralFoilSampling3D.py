@@ -29,10 +29,28 @@ class NeuralFoilSampling3D(Block):
         # twist_half = [0.0,0.0]
 
         n_span_stations = 3
-        y_half = np.linspace(0.0, 0.42, n_span_stations).tolist()
-        c_half = np.linspace(0.1875, 0.1125, n_span_stations).tolist()
-        xle_half = np.zeros(n_span_stations, dtype=float).tolist()
-        twist_half = np.zeros(n_span_stations, dtype=float).tolist()
+        plane_cfg = getattr(self.config, "plane", {}) or {}
+        wing_cfg = plane_cfg.get("wing", {}) if isinstance(plane_cfg, dict) else {}
+
+        y_src = wing_cfg.get("y_half", [0.0, 0.42]) if isinstance(wing_cfg, dict) else [0.0, 0.42]
+        c_src = wing_cfg.get("c_half", [0.1875, 0.1125]) if isinstance(wing_cfg, dict) else [0.1875, 0.1125]
+        xle_src = wing_cfg.get("xle_half", [0.0, 0.0]) if isinstance(wing_cfg, dict) else [0.0, 0.0]
+        twist_src = wing_cfg.get("twist_half", [0.0, 0.0]) if isinstance(wing_cfg, dict) else [0.0, 0.0]
+
+        def endpoints(values, fallback_start, fallback_end):
+            if isinstance(values, list) and len(values) >= 2:
+                return float(values[0]), float(values[-1])
+            return float(fallback_start), float(fallback_end)
+
+        y0, y1 = endpoints(y_src, 0.0, 0.42)
+        c0, c1 = endpoints(c_src, 0.1875, 0.1125)
+        x0, x1 = endpoints(xle_src, 0.0, 0.0)
+        t0, t1 = endpoints(twist_src, 0.0, 0.0)
+
+        y_half = np.linspace(y0, y1, n_span_stations).tolist()
+        c_half = np.linspace(c0, c1, n_span_stations).tolist()
+        xle_half = np.linspace(x0, x1, n_span_stations).tolist()
+        twist_half = np.linspace(t0, t1, n_span_stations).tolist()
 
         # y_half = [float(v) for v in getattr(nfConfig, "llt_y_half", [0, 0.105, 0.21, 0.315, 0.3675, 0.39375, 0.42])]
         # c_half = [float(v) for v in getattr(nfConfig, "llt_c_half", [0.1875, 0.16875, 0.15, 0.13125, 0.121875, 0.117187, 0.1125])]

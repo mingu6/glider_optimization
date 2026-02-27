@@ -32,11 +32,20 @@ class Airfoil3D(Block):
         self.leading_edge_param = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
         self.TE_thickness_param = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
         
-        self.upper_params_tip = nn.Parameter(torch.tensor(af_conf.upper_initial_weights, dtype=torch.float32))
-        self.lower_params_tip = nn.Parameter(torch.tensor(af_conf.lower_initial_weights, dtype=torch.float32))
-        self.leading_edge_param_tip = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
-        self.TE_thickness_param_tip = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
+        # self.upper_params_tip = nn.Parameter(torch.tensor(af_conf.upper_initial_weights, dtype=torch.float32))
+        # self.lower_params_tip = nn.Parameter(torch.tensor(af_conf.lower_initial_weights, dtype=torch.float32))
+        # self.leading_edge_param_tip = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
+        # self.TE_thickness_param_tip = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
 
+        tip_upper = af_conf.upper_initial_weights_tip if af_conf.upper_initial_weights_tip is not None else af_conf.upper_initial_weights
+        tip_lower = af_conf.lower_initial_weights_tip if af_conf.lower_initial_weights_tip is not None else af_conf.lower_initial_weights
+        tip_le = af_conf.leading_edge_weight_tip if af_conf.leading_edge_weight_tip is not None else af_conf.leading_edge_weight
+        tip_te = af_conf.TE_thickness_tip if af_conf.TE_thickness_tip is not None else af_conf.TE_thickness
+
+        self.upper_params_tip = nn.Parameter(torch.tensor(tip_upper, dtype=torch.float32))
+        self.lower_params_tip = nn.Parameter(torch.tensor(tip_lower, dtype=torch.float32))
+        self.leading_edge_param_tip = nn.Parameter(torch.tensor([tip_le], dtype=torch.float32))
+        self.TE_thickness_param_tip = nn.Parameter(torch.tensor([tip_te], dtype=torch.float32))
         # with torch.no_grad():
         #     self.upper_params_tip[0].add_(1e-4)
 
@@ -146,30 +155,51 @@ class Airfoil3D(Block):
                 after_tip_te=self.TE_thickness_param_tip,
             )
         
-        if self._iter == self.config.run.max_outer_iters - 1 and not self.config.io.wandb.enabled:
-            self.save_gif(fps=self.config.io.gif_fps)
+        if not self.config.io.wandb.enabled:
+            gif_every = max(1, int(getattr(self.config.io, "airfoil_gif_every", self.config.io.log_every)))
+            is_final_iter = self._iter == self.config.run.max_outer_iters - 1
+            if self._iter == 0 or ((self._iter + 1) % gif_every == 0) or is_final_iter:
+                self.save_gif(fps=self.config.io.gif_fps)
         
         return {}
     
     def resume(self, checkpoint):
         upper_weights = []
         lower_weights = []
-        
+        upper_weights_tip = []
+        lower_weights_tip = []
+
         for i in range(8):
             upper_key = f"airfoil/upper_params_{i}"
             lower_key = f"airfoil/lower_params_{i}"
             upper_weights.append(checkpoint[upper_key])
-            lower_weights.append(checkpoint[lower_key])            
-                    
+            lower_weights.append(checkpoint[lower_key])
+
+            upper_key_tip = f"airfoil/upper_params_{i}_tip"
+            lower_key_tip = f"airfoil/lower_params_{i}_tip"
+            upper_weights_tip.append(checkpoint[upper_key_tip] if upper_key_tip in checkpoint else checkpoint[upper_key])
+            lower_weights_tip.append(checkpoint[lower_key_tip] if lower_key_tip in checkpoint else checkpoint[lower_key])
+
         leading_edge_weight = float(checkpoint["airfoil/leading_edge_weight"])
         TE_thickness = float(checkpoint["airfoil/TE_thickness"])
-        
+        leading_edge_weight_tip = float(checkpoint.get("airfoil/leading_edge_weight_tip", leading_edge_weight))
+        TE_thickness_tip = float(checkpoint.get("airfoil/TE_thickness_tip", TE_thickness))
+
         self.upper_params = nn.Parameter(torch.tensor(upper_weights, dtype=torch.float32))
         self.lower_params = nn.Parameter(torch.tensor(lower_weights, dtype=torch.float32))
         self.leading_edge_param = nn.Parameter(torch.tensor([leading_edge_weight], dtype=torch.float32))
         self.TE_thickness_param = nn.Parameter(torch.tensor([TE_thickness], dtype=torch.float32))
+
+        self.upper_params_tip = nn.Parameter(torch.tensor(upper_weights_tip, dtype=torch.float32))
+        self.lower_params_tip = nn.Parameter(torch.tensor(lower_weights_tip, dtype=torch.float32))
+        self.leading_edge_param_tip = nn.Parameter(torch.tensor([leading_edge_weight_tip], dtype=torch.float32))
+        self.TE_thickness_param_tip = nn.Parameter(torch.tensor([TE_thickness_tip], dtype=torch.float32))
+
         self.optimizer = torch.optim.Adam(
-            [self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param],
+            [
+                self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param,
+                self.upper_params_tip, self.lower_params_tip, self.leading_edge_param_tip, self.TE_thickness_param_tip,
+            ],
             lr=self.config.airfoil.lr
         )
         self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=self.config.airfoil.gamma)

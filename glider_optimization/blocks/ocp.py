@@ -109,7 +109,7 @@ class OCP(Block):
         
         auxvar_vector = np.vstack([weights_CL, weights_CD, weights_CM])
         
-        initial_states = self.config.ocp.initial_states
+        initial_states = self._get_initial_states_for_mode()
         num_states = len(initial_states)
         
         worker_args = []
@@ -141,9 +141,9 @@ class OCP(Block):
         num_iterations = self.config.run.max_outer_iters
         iteration = downstream_info["iteration"]
         self._it = iteration
-        log_every = self.config.io.log_every
+        static_every = max(1, int(getattr(self.config.io, "static_plot_every", self.config.io.log_every)))
         
-        if iteration % log_every == 0 or iteration == (num_iterations - 1):
+        if iteration % static_every == 0 or iteration == (num_iterations - 1):
             self.plot_static(iteration)
             
         #if iteration == 0 or iteration == (num_iterations - 1):
@@ -162,6 +162,23 @@ class OCP(Block):
             "iteration": downstream_info["iteration"],
             "augmented_lagrangian": downstream_info["augmented_lagrangian"] 
         }
+
+    def _get_initial_states_for_mode(self) -> List[List[float]]:
+        mode = self.config.evaluation.mode
+        ocp_cfg = self.config.ocp
+
+        if mode == EvaluationMode.SoftLanding:
+            states = getattr(ocp_cfg, "initial_states_softlanding", None)
+        else:
+            states = getattr(ocp_cfg, "initial_states_perching", None)
+
+        if states is None or len(states) == 0:
+            states = ocp_cfg.initial_states
+
+        if states is None or len(states) == 0:
+            raise RuntimeError(f"No initial states configured for mode={mode}")
+
+        return states
 
     def _chebyshev_nodes(self, a: float, b: float, n: int) -> np.ndarray:
         k = np.arange(n)

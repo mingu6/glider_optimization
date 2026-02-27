@@ -51,20 +51,65 @@ class GliderPerching :
         return 0.5*(tanh(k*(x - xmin)) - tanh(k*(x - xmax)))
 
     def initDyn(self):
-        # set the global parameters
-        m = 0.065
-        l_w_i = -0.005                                # vector to leading edge from total body center of mass
-        l_w_f = -0.015                                # vector to trailing edge from total body center of mass
-        l = 0.26                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
-        self.l = l
-        l_e = 0.02                                    # distance from the hinge to the mean aerodynamic chord of the elevator
-        rho = 1.225                                   # assume Standard sea-level air density
-        m_f = 0.4 * m                                 # mass of fuselage
-        l_w = 0.5*(l_w_i+l_w_f)                       # mean aerodynamic chord location
-        g = 9.81
-        S_w = 0.158
-        S_e = 0.017
-        mu_air = 1.789e-5                               # assume Standard sea-level air dynamic viscosity      
+        # 2D fallback parameters (kept explicit)
+        m_2d = 0.1
+        l_w_i_2d = -0.005
+        l_w_f_2d = -0.015
+        #l_2d = 0.26
+        l_2d = 0.344
+        l_e_2d = 0.02
+        rho_2d = 1.225
+        g_2d = 9.81
+        S_w_2d = 0.158
+        S_e_2d = 0.017
+        mu_air_2d = 1.789e-5
+
+        plane_cfg = getattr(self.config, "plane", {}) or {}
+        dyn_cfg = plane_cfg.get("dyn", {}) if isinstance(plane_cfg, dict) else {}
+        flow_cfg = plane_cfg.get("flow", {}) if isinstance(plane_cfg, dict) else {}
+        wing_cfg = plane_cfg.get("wing", {}) if isinstance(plane_cfg, dict) else {}
+
+        m = float(dyn_cfg.get("mass", m_2d))
+        l_w_i = float(dyn_cfg.get("l_w_i", l_w_i_2d))
+        l_w_f = float(dyn_cfg.get("l_w_f", l_w_f_2d))
+        l_body = float(dyn_cfg.get("l", l_2d))
+        self.l = l_body
+        l_e = float(dyn_cfg.get("l_e", l_e_2d))
+        rho = float(flow_cfg.get("rho", rho_2d))
+        g = float(g_2d)
+        S_w = float(dyn_cfg.get("S_w", S_w_2d))
+        S_e = float(dyn_cfg.get("S_e", S_e_2d))
+        mu_air = float(flow_cfg.get("mu", mu_air_2d))
+
+        chord_2d = float(np.abs(l_w_f - l_w_i))
+        l_w_m_2d = 0.5 * (l_w_i + l_w_f)
+        chord = chord_2d
+        l_w_m = l_w_m_2d
+
+        y_half = wing_cfg.get("y_half", None) if isinstance(wing_cfg, dict) else None
+        c_half = wing_cfg.get("c_half", None) if isinstance(wing_cfg, dict) else None
+        xle_half = wing_cfg.get("xle_half", None) if isinstance(wing_cfg, dict) else None
+
+        if isinstance(y_half, list) and isinstance(c_half, list) and len(y_half) >= 2 and len(y_half) == len(c_half):
+            y = np.asarray(y_half, dtype=float)
+            c = np.asarray(c_half, dtype=float)
+            if np.all(np.diff(y) >= 0):
+                S_half = float(np.trapz(c, y))
+                span = float(2.0 * y[-1]) if y[-1] > 0 else 0.0
+                if S_half > 0 and span > 0:
+                    S_w = float(2.0 * S_half)
+                    chord = float(S_w / span)
+
+                    if isinstance(xle_half, list) and len(xle_half) == len(y_half):
+                        xle = np.asarray(xle_half, dtype=float)
+                        x_section = xle + 0.5 * c
+                        num = float(np.trapz(c * x_section, y))
+                        den = float(np.trapz(c, y))
+                        if den > 0:
+                            l_w_m = float(num / den)
+
+        m_f = 0.4 * m
+        l_w = l_w_m
         
         chebyshev_deg = self.config.reducedModel.chebyshev_degree
 
@@ -77,9 +122,9 @@ class GliderPerching :
 
         m_w = 0.6 * m * S_w / (S_w + S_e)
         m_e = 0.6 * m * S_e / (S_w + S_e)
-        l_f = -(l_w * m_w + (l - l_e) * m_e) / m_f      # vector to fuselage CoM
-        I = m_w * l_w ** 2 + m_e * (l + l_e) ** 2 + m_f * l_f ** 2
-        chord = np.abs(l_w_f - l_w_i) # mean aerodynamic chord length
+        #l_f = -(l_w * m_w + (l + l_e) * m_e) / m_f      # vector to fuselage CoM
+        l_f= -0.025
+        inertia = m_w * l_w ** 2 + m_e * (l_body + l_e) ** 2 + m_f * l_f ** 2
         
         # Declare system variables
         x = SX.sym("x")
@@ -96,19 +141,19 @@ class GliderPerching :
         self.X = vertcat(x, z, theta, phi, xdot, zdot, thetadot, t)
         self.U = phidot
 
-        # wing mean chord 
-        l_w_m = (l_w_i + l_w_f) / 2
+        # wing centroid location (YAML-derived if available, otherwise 2D fallback)
 
-        com_w = l_w_m + self.mc_to_wcom(l_w_m)
-        com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption)                
+        #com_w = l_w_m + self.mc_to_wcom(l_w_m)
+        com_w = l_w_m
+        com_e = l_body + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption)                
         com_f = l_f
         com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
 
         # geometric centroid of aerodynamic surfaces (mean chord for flat plate)
         x_wdot = xdot + l_w_m * thetadot * sin(theta)
         z_wdot = zdot - l_w_m * thetadot * cos(theta)
-        x_edot = xdot + l * thetadot * sin(theta) + l_e * (thetadot + phidot) * sin(theta + phi)
-        z_edot = zdot - l * thetadot * cos(theta) - l_e * (thetadot + phidot) * cos(theta + phi)
+        x_edot = xdot + l_body * thetadot * sin(theta) + l_e * (thetadot + phidot) * sin(theta + phi)
+        z_edot = zdot - l_body * thetadot * cos(theta) - l_e * (thetadot + phidot) * cos(theta + phi)
         
         v_w = sqrt(x_wdot * x_wdot + z_wdot * z_wdot + 1e-8) # flow/air speed
         
@@ -155,7 +200,7 @@ class GliderPerching :
 
         τ_w = r_w[1] * F_w[0] - r_w[0] * F_w[1] + M_w
         τ_e = r_e[1] * F_e[0] - r_e[0] * F_e[1] + M_e
-        thetaddot = -1. / I * (τ_w + τ_e)
+        thetaddot = -1. / inertia * (τ_w + τ_e)
 
         # linear accelerations (F = ma)
         xddot = 1. / m * (F_w[0] + F_e[0])
