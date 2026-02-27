@@ -22,7 +22,7 @@ class NeuralFoilSampling3D(Block):
        
         # TODO move in cfg
         # Use >2 span stations so eta varies across panels (root/tip gradients differ).
-        n_span_stations = 3
+        n_span_stations = 7
         y_half = np.linspace(0.0, 0.30, n_span_stations).tolist()
         c_half = np.linspace(0.113, 0.083, n_span_stations).tolist()
         xle_half = np.zeros(n_span_stations, dtype=float).tolist()
