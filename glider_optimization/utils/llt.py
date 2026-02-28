@@ -185,6 +185,7 @@ def _G(
     LE: torch.Tensor,
     TE: torch.Tensor,
     const: LLTConst,
+    return_details: bool = False,
 ) -> torch.Tensor:
     """
     One Picard update step Gamma -> Gamma_new (differentiable).
@@ -209,6 +210,8 @@ def _G(
         j = const.mirror_of
         Gamma_new = 0.5 * (Gamma_new + Gamma_new[:, j])
 
+    if return_details:
+        return Gamma_new, alpha_eff, Re, aero
     return Gamma_new
 
 def _F(
