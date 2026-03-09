@@ -1,5 +1,6 @@
 from ..blockBase import Block
-from typing import override
+from typing_extensions import override
+#from typing import override
 from ..config import Config
 from ..utils.cu_kulfan_airfoil import get_aero_from_kulfan_parameters_cuda
 from ..utils.llt import build_llt_system
@@ -28,7 +29,7 @@ class NeuralFoilSampling3D(Block):
         # xle_half = [0.0,0.0]
         # twist_half = [0.0,0.0]
 
-        n_span_stations = 3
+        n_span_stations = 7
         plane_cfg = getattr(self.config, "plane", {}) or {}
         wing_cfg = plane_cfg.get("wing", {}) if isinstance(plane_cfg, dict) else {}
 
