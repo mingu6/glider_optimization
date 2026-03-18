@@ -62,6 +62,7 @@ class GliderPerching :
         g_2d = 9.81
         S_w_2d = 0.158
         S_e_2d = 0.017
+        chord_e=0.06
         mu_air_2d = 1.789e-5
 
         plane_cfg = getattr(self.config, "plane", {}) or {}
@@ -82,9 +83,11 @@ class GliderPerching :
         mu_air = float(flow_cfg.get("mu", mu_air_2d))
 
         chord_2d = float(np.abs(l_w_f - l_w_i))
-        l_w_m_2d = 0.5 * (l_w_i + l_w_f)
+        #l_w_m_2d= 0.5 * (l_w_i + l_w_f) 
+        l_w_cg = 0.5 * (l_w_i + l_w_f)           # structural CoM fallback (midchord)
+        l_w_ac = l_w_i + 0.25 * (l_w_f - l_w_i)  # aerodynamic center fallback (c/4)
         chord = chord_2d
-        l_w_m = l_w_m_2d
+        #l_w_m = l_w_m_2d
 
         y_half = wing_cfg.get("y_half", None) if isinstance(wing_cfg, dict) else None
         c_half = wing_cfg.get("c_half", None) if isinstance(wing_cfg, dict) else None
@@ -102,14 +105,14 @@ class GliderPerching :
 
                     if isinstance(xle_half, list) and len(xle_half) == len(y_half):
                         xle = np.asarray(xle_half, dtype=float)
-                        x_section = xle + 0.5 * c
-                        num = float(np.trapz(c * x_section, y))
                         den = float(np.trapz(c, y))
                         if den > 0:
-                            l_w_m = float(num / den)
+                            l_w_ac = float(np.trapz(c * (xle + 0.25 * c), y) / den)
+                            l_w_cg = float(np.trapz(c * (xle + 0.50 * c), y) / den)
 
         m_f = 0.4 * m
-        l_w = l_w_m
+        # Role 1 — pitch inertia: structural CoM arm (c/2), sets rotational inertia of the wing
+        l_w = l_w_cg
         
         chebyshev_deg = self.config.reducedModel.chebyshev_degree
 
@@ -141,17 +144,15 @@ class GliderPerching :
         self.X = vertcat(x, z, theta, phi, xdot, zdot, thetadot, t)
         self.U = phidot
 
-        # wing centroid location (YAML-derived if available, otherwise 2D fallback)
-
-        #com_w = l_w_m + self.mc_to_wcom(l_w_m)
-        com_w = l_w_m
+        # Role 3 — torque arm: F_w applied at c/4 (l_w_ac), consistent with NeuralFoil CM convention;
+        #           system CoM (com_a) uses structural CoM (l_w_cg) for mass distribution
         com_e = l_body + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption)                
         com_f = l_f
-        com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
+        com_a = (l_w_cg*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
 
-        # geometric centroid of aerodynamic surfaces (mean chord for flat plate)
-        x_wdot = xdot + l_w_m * thetadot * sin(theta)
-        z_wdot = zdot - l_w_m * thetadot * cos(theta)
+        # Role 2 — velocity at aero center: alpha, v_w, Re evaluated at c/4 (matches NeuralFoil convention)
+        x_wdot = xdot + l_w_ac * thetadot * sin(theta)
+        z_wdot = zdot - l_w_ac * thetadot * cos(theta)
         x_edot = xdot + l_body * thetadot * sin(theta) + l_e * (thetadot + phidot) * sin(theta + phi)
         z_edot = zdot - l_body * thetadot * cos(theta) - l_e * (thetadot + phidot) * cos(theta + phi)
         
@@ -190,12 +191,12 @@ class GliderPerching :
         F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)    # lift force vector (proportional to)
         F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)   # drag force vector (proportional to)
         F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
-        M_e = 0.5 * rho * v_e**2 * S_e * chord * self.C_M(alpha_e)
+        M_e = 0.5 * rho * v_e**2 * S_e * chord_e * self.C_M(alpha_e)
 
         # compute torques with respect to fixed reference point induced by forces
 
         # moment arms (vector from reference point of state to wing/elevator/fuselage)
-        r_w = [ (- com_w + com_a) * cos(theta), (- com_w + com_a) * sin(theta) ]
+        r_w = [ (- l_w_ac + com_a) * cos(theta), (- l_w_ac + com_a) * sin(theta) ]
         r_e = [ (- com_e + com_a) * cos(theta), (- com_e + com_a) * sin(theta)]
 
         τ_w = r_w[1] * F_w[0] - r_w[0] * F_w[1] + M_w
