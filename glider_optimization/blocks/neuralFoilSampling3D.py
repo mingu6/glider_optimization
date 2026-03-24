@@ -13,6 +13,7 @@ import wandb
 from ..utils.llt import LLTImplicitFn, _MODEL_SIZE_TO_ID, _DEVICE_TO_ID
 from ..utils.airfoil_debug import is_airfoil_debug_enabled
 from pathlib import Path
+from ..utils.spanwise_geometry import build_half_wing_stations_from_cfg, mix_root_tip_torch
 
 
 class NeuralFoilSampling3D(Block):
@@ -32,26 +33,11 @@ class NeuralFoilSampling3D(Block):
         n_span_stations = 7
         plane_cfg = getattr(self.config, "plane", {}) or {}
         wing_cfg = plane_cfg.get("wing", {}) if isinstance(plane_cfg, dict) else {}
-
-        y_src = wing_cfg.get("y_half", [0.0, 0.42]) if isinstance(wing_cfg, dict) else [0.0, 0.42]
-        c_src = wing_cfg.get("c_half", [0.1875, 0.1125]) if isinstance(wing_cfg, dict) else [0.1875, 0.1125]
-        xle_src = wing_cfg.get("xle_half", [0.0, 0.0]) if isinstance(wing_cfg, dict) else [0.0, 0.0]
-        twist_src = wing_cfg.get("twist_half", [0.0, 0.0]) if isinstance(wing_cfg, dict) else [0.0, 0.0]
-
-        def endpoints(values, fallback_start, fallback_end):
-            if isinstance(values, list) and len(values) >= 2:
-                return float(values[0]), float(values[-1])
-            return float(fallback_start), float(fallback_end)
-
-        y0, y1 = endpoints(y_src, 0.0, 0.42)
-        c0, c1 = endpoints(c_src, 0.1875, 0.1125)
-        x0, x1 = endpoints(xle_src, 0.0, 0.0)
-        t0, t1 = endpoints(twist_src, 0.0, 0.0)
-
-        y_half = np.linspace(y0, y1, n_span_stations).tolist()
-        c_half = np.linspace(c0, c1, n_span_stations).tolist()
-        xle_half = np.linspace(x0, x1, n_span_stations).tolist()
-        twist_half = np.linspace(t0, t1, n_span_stations).tolist()
+        stations = build_half_wing_stations_from_cfg(wing_cfg, n_span_stations=n_span_stations)
+        y_half = stations["y_half"].tolist()
+        c_half = stations["c_half"].tolist()
+        xle_half = stations["xle_half"].tolist()
+        twist_half = stations["twist_half"].tolist()
 
         # y_half = [float(v) for v in getattr(nfConfig, "llt_y_half", [0, 0.105, 0.21, 0.315, 0.3675, 0.39375, 0.42])]
         # c_half = [float(v) for v in getattr(nfConfig, "llt_c_half", [0.1875, 0.16875, 0.15, 0.13125, 0.121875, 0.117187, 0.1125])]
@@ -167,8 +153,8 @@ class NeuralFoilSampling3D(Block):
         eta = self.llt_eta  # (n_pan,)
         root_upper = upper
         tip_upper_ref = upper_tip
-        upper = (1.0 - eta)[:, None] * upper[None, :] + eta[:, None] * upper_tip[None, :]
-        lower = (1.0 - eta)[:, None] * lower[None, :] + eta[:, None] * lower_tip[None, :]
+        upper = mix_root_tip_torch(upper, upper_tip, eta)
+        lower = mix_root_tip_torch(lower, lower_tip, eta)
         LE = (1.0 - eta) * LE.reshape(-1)[0] + eta * LE_tip.reshape(-1)[0]
         TE = (1.0 - eta) * TE.reshape(-1)[0] + eta * TE_tip.reshape(-1)[0]
         self._log_spanwise_mix(root_upper, tip_upper_ref, upper, eta)
@@ -326,7 +312,7 @@ class NeuralFoilSampling3D(Block):
             model_size=self.config.neuralFoilSampling.neuralFoil_size,
         )
 
-        return {
+        out = {
             "alpha": self.alpha_batch,
             "Re": self.Re_batch,
             "CL": self._last_aero_coeff["CL"].detach(),
@@ -341,6 +327,9 @@ class NeuralFoilSampling3D(Block):
             "val_CM": val_aero["CM"].detach(),
             "iteration": downstream_info["iteration"]
         }
+        if "wing_reference_geometry" in downstream_info:
+            out["wing_reference_geometry"] = downstream_info["wing_reference_geometry"]
+        return out
 
     @override
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, torch.Tensor]:

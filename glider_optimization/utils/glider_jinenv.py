@@ -12,9 +12,10 @@ from matplotlib.patches import Circle, Rectangle
 from matplotlib.collections import LineCollection
 from ..config import Config, EvaluationMode
 class GliderPerching :
-    def __init__(self, config: Config, project_name='glider-perching'):
+    def __init__(self, config: Config, project_name='glider-perching', wing_reference_geometry=None):
         self.project_name = project_name
         self.config = config
+        self.wing_reference_geometry = wing_reference_geometry
 
     def C_L(self, alpha):
         return 2 * sin(alpha) * cos(alpha)
@@ -109,6 +110,22 @@ class GliderPerching :
                         if den > 0:
                             l_w_ac = float(np.trapz(c * (xle + 0.25 * c), y) / den)
                             l_w_cg = float(np.trapz(c * (xle + 0.50 * c), y) / den)
+
+        dynamic_centroid_enabled = bool(wing_cfg.get("dynamic_centroid", False)) if isinstance(wing_cfg, dict) else False
+        if dynamic_centroid_enabled and isinstance(self.wing_reference_geometry, dict):
+            l_override = self.wing_reference_geometry.get("l_w_m", None)
+            chord_override = self.wing_reference_geometry.get("chord_ref", None)
+            if l_override is not None:
+                try:
+                    l_w_ac = float(l_override)
+                    l_w_cg = float(l_override)
+                except Exception:
+                    pass
+            if chord_override is not None:
+                try:
+                    chord = float(chord_override)
+                except Exception:
+                    pass
 
         m_f = 0.4 * m
         # Role 1 — pitch inertia: structural CoM arm (c/2), sets rotational inertia of the wing

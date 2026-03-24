@@ -23,11 +23,12 @@ from math import sqrt
 def solve_worker(config: Config, 
                  init_state: List[float], 
                  auxvar_vector: np.ndarray, 
+                 wing_reference_geometry: Optional[Dict[str, float]] = None,
                  prev_w_opt: Optional[List[float]] = None, 
                  prev_lam_g: Optional[List[float]] = None, 
                  prev_lam_x: Optional[List[float]] = None) -> Dict[str, Any]:
 
-    env = GliderPerching(config)
+    env = GliderPerching(config, wing_reference_geometry=wing_reference_geometry)
     coc = COCsys()
     
     env.initDyn()
@@ -103,6 +104,7 @@ class OCP(Block):
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         start_time = time.perf_counter()
+        wing_reference_geometry = downstream_info.get("wing_reference_geometry")
         
         weights_CL = downstream_info["phi_CL"].view(-1, 1).detach().cpu().numpy()
         weights_CD = downstream_info["phi_CD"].view(-1, 1).detach().cpu().numpy()
@@ -123,7 +125,7 @@ class OCP(Block):
                     prev_lg = prev_sol.get("lam_g")
                     prev_lx = prev_sol.get("lam_x")
             
-            worker_args.append((self.config, init_state, auxvar_vector, prev_w, prev_lg, prev_lx))
+            worker_args.append((self.config, init_state, auxvar_vector, wing_reference_geometry, prev_w, prev_lg, prev_lx))
 
         num_workers = min(mp.cpu_count(), len(worker_args))
         if num_workers < 1: num_workers = 1
@@ -137,7 +139,7 @@ class OCP(Block):
         if failures > 0:
             self.logger.warning(f"⚠️ {failures}/{num_states} IPOPT solves failed")
 
-        self._log_flight_conditions(downstream_info["iteration"])
+        self._log_flight_conditions(downstream_info["iteration"], wing_reference_geometry)
             
         num_iterations = self.config.run.max_outer_iters
         iteration = downstream_info["iteration"]
@@ -185,7 +187,7 @@ class OCP(Block):
         k = np.arange(n)
         return 0.5 * (a + b) + 0.5 * (b - a) * np.cos((2 * k + 1) / (2 * n) * np.pi)
 
-    def _log_flight_conditions(self, iteration: int) -> None:
+    def _log_flight_conditions(self, iteration: int, wing_reference_geometry: Optional[Dict[str, float]] = None) -> None:
         out_dir = Path(self.config.io.checkpoint_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / "flight_conditions.log"
@@ -208,6 +210,11 @@ class OCP(Block):
         l_w_i = -0.005
         l_w_f = -0.015
         l_w_m = 0.5 * (l_w_i + l_w_f)
+        if isinstance(wing_reference_geometry, dict):
+            try:
+                l_w_m = float(wing_reference_geometry.get("l_w_m", l_w_m))
+            except Exception:
+                pass
 
         points = []
         for traj_idx, traj in enumerate(self.last_trajs):

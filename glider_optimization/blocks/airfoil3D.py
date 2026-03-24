@@ -17,6 +17,7 @@ import torch.optim.lr_scheduler as lr_scheduler
 import wandb
 import logging
 from ..utils.airfoil_debug import log_kulfan_parameters, log_backward_update, is_airfoil_debug_enabled
+from ..utils.spanwise_geometry import compute_dynamic_wing_reference_geometry
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -61,10 +62,36 @@ class Airfoil3D(Block):
         self._iter = 0
         self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=af_conf.gamma)
         self.frames = []
+        self._n_span_stations = 7
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         self._iter = downstream_info["iteration"]
+
+        plane_cfg = getattr(self.config, "plane", {}) or {}
+        wing_cfg = plane_cfg.get("wing", {}) if isinstance(plane_cfg, dict) else {}
+        dynamic_centroid = bool(wing_cfg.get("dynamic_centroid", False)) if isinstance(wing_cfg, dict) else False
+
+        wing_reference_geometry = None
+        if dynamic_centroid:
+            root_kulfan = {
+                "upper_weights": self.upper_params.detach().cpu().numpy(),
+                "lower_weights": self.lower_params.detach().cpu().numpy(),
+                "leading_edge_weight": float(self.leading_edge_param.detach().cpu().numpy()[0]),
+                "TE_thickness": float(self.TE_thickness_param.detach().cpu().numpy()[0]),
+            }
+            tip_kulfan = {
+                "upper_weights": self.upper_params_tip.detach().cpu().numpy(),
+                "lower_weights": self.lower_params_tip.detach().cpu().numpy(),
+                "leading_edge_weight": float(self.leading_edge_param_tip.detach().cpu().numpy()[0]),
+                "TE_thickness": float(self.TE_thickness_param_tip.detach().cpu().numpy()[0]),
+            }
+            wing_reference_geometry = compute_dynamic_wing_reference_geometry(
+                wing_cfg=wing_cfg,
+                root_kulfan=root_kulfan,
+                tip_kulfan=tip_kulfan,
+                n_span_stations=self._n_span_stations,
+            )
 
         if is_airfoil_debug_enabled() and (self._iter % self.config.io.log_every == 0):
             log_kulfan_parameters(
@@ -87,7 +114,7 @@ class Airfoil3D(Block):
             if self.config.io.wandb.enabled:
                 self._log_params_to_wandb()
                 
-        return {
+        out = {
             "upper_weights": self.upper_params.to(self.device),
             "lower_weights": self.lower_params.to(self.device),
             "leading_edge_weight": self.leading_edge_param.to(self.device),
@@ -98,6 +125,9 @@ class Airfoil3D(Block):
             "TE_thickness_tip": self.TE_thickness_param_tip.to(self.device),
             "iteration": downstream_info["iteration"]
         }
+        if wing_reference_geometry is not None:
+            out["wing_reference_geometry"] = wing_reference_geometry
+        return out
 
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
         if is_airfoil_debug_enabled():

@@ -55,13 +55,16 @@ class ReducedModel(Block):
         #self.plot(CM.cpu(), Re.cpu(), alpha.cpu(), coeffs_CM.cpu(), "CM approximation", "CM", downstream_info["iteration"])
         #exit(0)
         
-        return {
+        out = {
             "phi_CL": coeffs_CL,
             "phi_CD": coeffs_CD,
             "phi_CM": coeffs_CM,
             "augmented_lagrangian": downstream_info["augmented_lagrangian"],
             "iteration": downstream_info["iteration"]
         }
+        if "wing_reference_geometry" in downstream_info:
+            out["wing_reference_geometry"] = downstream_info["wing_reference_geometry"]
+        return out
 
     @override
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
