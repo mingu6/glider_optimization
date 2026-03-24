@@ -97,6 +97,30 @@ def build_llt_system(y_half, c_half, xle_half, twist_half):
     dy = np.abs(yB - yA)
     S = np.sum(0.5*(cA + cB) * dy)
 
+    # ── Vortex-core saturation guard ─────────────────────────────────────────
+    # rc_nf = 0.25 * c_mid is the regularisation radius used for self-induction
+    # (the diagonal of D_nf).  When dy < rc_nf the control point sits inside
+    # its own core: the bound-vortex self-induction is suppressed to ≈ 0,
+    # downwash correction at that panel is lost, and cl is evaluated at the
+    # full geometric AoA — producing a spurious circulation spike at the root
+    # and corrupting induced-drag and implicit-adjoint gradients.
+    rc_nf_pan = 0.25 * c_mid
+    saturated = dy < rc_nf_pan
+    if saturated.any():
+        bad_idx  = np.where(saturated)[0]
+        worst    = bad_idx[np.argmax(rc_nf_pan[bad_idx] / dy[bad_idx])]
+        import warnings
+        warnings.warn(
+            f"build_llt_system: {saturated.sum()} panel(s) have dy < rc_nf "
+            f"(worst: panel {worst}, y={y_mid[worst]:.4f} m, "
+            f"dy={dy[worst]*1e3:.1f} mm, rc_nf={rc_nf_pan[worst]*1e3:.1f} mm). "
+            "Core saturation will suppress self-induction and produce a spurious "
+            "circulation spike. Reduce panel count or use a half-cosine (Multhopp) "
+            "distribution to widen the innermost panels.",
+            stacklevel=2,
+        )
+    # ─────────────────────────────────────────────────────────────────────────
+
     # Quarter-chord positions per panel (midpoints)
     x_c4A = xleA + 0.25*cA
     x_c4B = xleB + 0.25*cB
