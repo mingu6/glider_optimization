@@ -8,19 +8,6 @@ from math import sqrt
 import logging
 import numpy as np
 import wandb
-
-# Optional 3D LLT upgrade (uses aero_rom)
-try:
-    from aero_rom.src.llt import LLT_computational_params as _LLT_params
-    from aero_rom.src.implicit_llt import LLTImplicitFn as _LLTImplicitFn
-    from aero_rom.src.implicit_llt import _MODEL_SIZE_TO_ID as _LLT_MODEL_SIZE_TO_ID
-    from aero_rom.src.implicit_llt import _DEVICE_TO_ID as _LLT_DEVICE_TO_ID
-except Exception:
-    _LLT_params = None
-    _LLTImplicitFn = None
-    _LLT_MODEL_SIZE_TO_ID = None
-    _LLT_DEVICE_TO_ID = None
-
 class NeuralFoilSampling(Block):
     @override
     def __init__(self, config: Config):
@@ -41,7 +28,6 @@ class NeuralFoilSampling(Block):
         self.alpha_batch = aoa.reshape(-1)
         self.Re_batch = re.reshape(-1)
         
-        # Validation set (random uniform)
         n_val = int(nfConfig.n_samples * 0.2) # 20% validation size
         self.alpha_val = (torch.rand(n_val, device=self.device) * (nfConfig.AoA_max - nfConfig.AoA_min)) + nfConfig.AoA_min
         self.Re_val = (torch.rand(n_val, device=self.device) * (nfConfig.Re_max - nfConfig.Re_min)) + nfConfig.Re_min
@@ -56,89 +42,6 @@ class NeuralFoilSampling(Block):
         self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
         self.use_3d_llt = bool(getattr(nfConfig, "use_3d_llt", False))
 
-        if self.use_3d_llt:
-            if _LLT_params is None or _LLTImplicitFn is None:
-                raise ImportError(
-                    "use_3d_llt=True but aero_rom is not importable. "
-                    "Ensure glider_optimization/aero_rom is on PYTHONPATH and deps are installed."
-                )
-
-            ckpt_path = getattr(nfConfig, "llt_ckpt_path", "aero_rom/artifacts/models/3d_blocks.pt")
-            ckpt = torch.load(ckpt_path, map_location=self.device)
-            flow = ckpt.get("flow", {})
-            wing = ckpt.get("wing_geometry", {})
-
-            # Build LLT geometry once (airfoil name here is irrelevant: you optimize Kulfan params anyway)
-            comp = _LLT_params(
-                wing["y_half"], wing["c_half"], wing["xle_half"], wing["twist_half"],
-                wing.get("airfoil", "naca0012"),
-            )
-
-            # Const tensors
-            self._llt_dy = torch.as_tensor(comp["dy"], dtype=torch.float32, device=self.device)
-            self._llt_y = torch.as_tensor(comp["y_mid"], dtype=torch.float32, device=self.device)
-            self._llt_c = torch.as_tensor(comp["c_mid"], dtype=torch.float32, device=self.device)
-            self._llt_tw = torch.as_tensor(comp["tw_mid"], dtype=torch.float32, device=self.device)
-            self._llt_S = torch.as_tensor(comp["S"], dtype=torch.float32, device=self.device)
-            self._llt_cbar = torch.as_tensor(comp["cbar"], dtype=torch.float32, device=self.device)
-            self._llt_x_c4 = torch.as_tensor(comp["x_c4_mid"], dtype=torch.float32, device=self.device)
-            self._llt_xref = torch.as_tensor(comp["x_ref"], dtype=torch.float32, device=self.device)
-            self._llt_span = torch.as_tensor(comp["span"], dtype=torch.float32, device=self.device)
-            self._llt_D_nf = torch.as_tensor(comp["D_nf"], dtype=torch.float32, device=self.device)
-            self._llt_D_tr = torch.as_tensor(comp["D_tr"], dtype=torch.float32, device=self.device)
-            self._llt_mirror_of = torch.as_tensor(comp["mirror_of"], dtype=torch.long, device=self.device)
-
-            rho_air = float(flow.get("rho", 1.2041))
-            if "mu" in flow:
-                mu_air = float(flow["mu"])
-            else:
-                mu_air = rho_air * float(flow.get("nu", 1.81e-5 / 1.2041))
-
-            self._llt_rho = torch.as_tensor(rho_air, dtype=torch.float32, device=self.device)
-            self._llt_mu = torch.as_tensor(mu_air, dtype=torch.float32, device=self.device)
-
-            # Overrides (IMPORTANT: handle None cleanly)
-            beta_ov = getattr(nfConfig, "llt_beta", None)
-            tol_ov = getattr(nfConfig, "llt_tol", None)
-            n_iter_ov = getattr(nfConfig, "llt_n_iter", None)
-            enforce_sym_ov = getattr(nfConfig, "llt_enforce_symmetry", None)
-
-            beta = float(beta_ov) if beta_ov is not None else float(ckpt.get("beta", 0.40))
-            tol = float(tol_ov) if tol_ov is not None else float(ckpt.get("tol", 1e-6))
-            n_iter = int(n_iter_ov) if n_iter_ov is not None else int(ckpt.get("n_iter", 15))
-            enforce_sym = bool(enforce_sym_ov) if enforce_sym_ov is not None else bool(ckpt.get("enforce_symmetry", True))
-
-            self._llt_beta_t = torch.tensor(beta, dtype=torch.float32, device=self.device)
-            self._llt_tol_t = torch.tensor(tol, dtype=torch.float32, device=self.device)
-            self._llt_n_iter_t = torch.tensor(float(n_iter), dtype=torch.float32, device=self.device)
-            self._llt_enforce_sym_t = torch.tensor(1.0 if enforce_sym else 0.0, dtype=torch.float32, device=self.device)
-
-            ms_ov = getattr(nfConfig, "llt_model_size", None)
-            ms = ms_ov if ms_ov is not None else self.config.neuralFoilSampling.neuralFoil_size
-            self._llt_model_size_id = torch.tensor(_LLT_MODEL_SIZE_TO_ID[ms], dtype=torch.int64, device=self.device)
-            self._llt_device_id = torch.tensor(_LLT_DEVICE_TO_ID[self.device.type], dtype=torch.int64, device=self.device)
-
-    @override
-    def _eval_3d_llt(self, upper, lower, LE, TE, alpha_deg: torch.Tensor, Re_ref: torch.Tensor):
-        """
-        Minimal 3D wrapper: LLTImplicitFn expects (alpha, V).
-        We map Re_ref -> V via V = Re_ref * mu / (rho * cbar).
-        """
-        V = Re_ref * (self._llt_mu / (self._llt_rho * self._llt_cbar))
-
-        C = _LLTImplicitFn.apply(
-            alpha_deg.reshape(-1), V.reshape(-1),
-            upper, lower, LE.reshape(-1), TE.reshape(-1),
-            self._llt_dy, self._llt_y, self._llt_c, self._llt_tw, self._llt_S, self._llt_cbar,
-            self._llt_x_c4, self._llt_xref, self._llt_span,
-            self._llt_D_nf, self._llt_D_tr, self._llt_mirror_of,
-            self._llt_rho, self._llt_mu,
-            self._llt_beta_t, self._llt_tol_t, self._llt_n_iter_t, self._llt_enforce_sym_t,
-            self._llt_model_size_id, self._llt_device_id,
-        )
-        return {"CL": C[:, 0], "CD": C[:, 1], "CM": C[:, 2]}
-
-
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         B = self.alpha_batch.shape[0]
@@ -151,34 +54,15 @@ class NeuralFoilSampling(Block):
             "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B),
             "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B),
         }
-        if self.use_3d_llt:
-            # 3D LLT coefficients (differentiable)
-            self._last_aero_coeff = self._eval_3d_llt(
-                downstream_info["upper_weights"],
-                downstream_info["lower_weights"],
-                downstream_info["leading_edge_weight"],
-                downstream_info["TE_thickness"],
-                self.alpha_batch,
-                self.Re_batch,
-            )
 
-            conf2d = get_aero_from_kulfan_parameters_cuda(
-                kulfan_batch,
-                self.alpha_batch,
-                self.Re_batch,
-                device=self.device,
-                model_size=self.config.neuralFoilSampling.neuralFoil_size,
-            ).get("analysis_confidence", torch.ones_like(self.alpha_batch))
-            self._last_aero_coeff["analysis_confidence"] = conf2d
-
-        else:
-            self._last_aero_coeff = get_aero_from_kulfan_parameters_cuda(
-                kulfan_batch,
-                self.alpha_batch,
-                self.Re_batch,
-                device=self.device,
-                model_size=self.config.neuralFoilSampling.neuralFoil_size,
-            )
+        self._last_aero_coeff = get_aero_from_kulfan_parameters_cuda(
+            kulfan_batch,
+            self.alpha_batch,
+            self.Re_batch,
+            device=self.device,
+            model_size=self.config.neuralFoilSampling.neuralFoil_size,
+        )
+        
         conf = self._last_aero_coeff.get("analysis_confidence")
         try:
             conf_mean = float(conf.mean().detach().cpu().item())
@@ -214,31 +98,14 @@ class NeuralFoilSampling(Block):
             "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B_val),
             "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B_val),
         }
-        if self.use_3d_llt:
-            val_aero = self._eval_3d_llt(
-                downstream_info["upper_weights"],
-                downstream_info["lower_weights"],
-                downstream_info["leading_edge_weight"],
-                downstream_info["TE_thickness"],
-                self.alpha_val,
-                self.Re_val,
-            )
-            val_conf2d = get_aero_from_kulfan_parameters_cuda(
-                kulfan_batch_val,
-                self.alpha_val,
-                self.Re_val,
-                device=self.device,
-                model_size=self.config.neuralFoilSampling.neuralFoil_size,
-            ).get("analysis_confidence", torch.ones_like(self.alpha_val))
-            val_aero["analysis_confidence"] = val_conf2d
-        else:
-            val_aero = get_aero_from_kulfan_parameters_cuda(
-                kulfan_batch_val,
-                self.alpha_val,
-                self.Re_val,
-                device=self.device,
-                model_size=self.config.neuralFoilSampling.neuralFoil_size,
-            )
+      
+        val_aero = get_aero_from_kulfan_parameters_cuda(
+            kulfan_batch_val,
+            self.alpha_val,
+            self.Re_val,
+            device=self.device,
+            model_size=self.config.neuralFoilSampling.neuralFoil_size,
+        )
 
         return {
             "alpha": self.alpha_batch,
