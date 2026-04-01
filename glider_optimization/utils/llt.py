@@ -72,8 +72,8 @@ def build_llt_system(y_half, c_half, xle_half, twist_half):
     twist_half= np.array(twist_half, dtype=float)
     y, c, xle, twist = mirror_full(y_half, c_half, xle_half, twist_half)
     
-    vortex_location = 0.75  # as fraction of local chord
-    ctrl_point_location = 0.75  # as fraction of local chord
+    vortex_location = 0.25  # as fraction of local chord
+    ctrl_point_location = 0.25  # as fraction of local chord
 
     n_st = len(y)
     n_pan = n_st - 1
