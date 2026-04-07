@@ -183,6 +183,9 @@ _nn_parameters: dict[str, dict[str, np.ndarray]] = {
     for model_size in _allowable_model_sizes
 }
 
+# Cache converted torch tensors to avoid re-converting on every call
+_nn_parameters_cuda: dict[tuple, dict[str, torch.Tensor]] = {}
+
 def _squared_mahalanobis_distance_cuda(x: torch.Tensor) -> torch.Tensor:
     """
     Computes the squared Mahalanobis distance of a set of points from the training data.
@@ -226,7 +229,14 @@ def get_aero_from_kulfan_parameters_cuda(
             f"Invalid {model_size=}. Must be one of {_allowable_model_sizes}."
         )
     nn_params_np: dict[str, np.ndarray] = _nn_parameters[model_size]
-        
+    cache_key = (model_size, str(device))
+    if cache_key not in _nn_parameters_cuda:
+        _nn_parameters_cuda[cache_key] = {
+            k: torch.as_tensor(v, dtype=torch.float32, device=device)
+            for k, v in nn_params_np.items()
+        }
+    nn_params_cuda = _nn_parameters_cuda[cache_key]
+
     ### setup cuda environment
     kulfan_parameters_cuda = {k: v.to(device) for k, v in kulfan_parameters_cuda.items()}
     alpha = alpha.to(device)
@@ -234,10 +244,6 @@ def get_aero_from_kulfan_parameters_cuda(
     n_crit = n_crit.to(device)
     xtr_upper = xtr_upper.to(device)
     xtr_lower = xtr_lower.to(device)
-    nn_params_cuda: dict[str, torch.Tensor] = {
-        k: torch.as_tensor(v, dtype=torch.float32, device=device) 
-        for k, v in nn_params_np.items()
-    }
     ### Prepare the inputs for the neural network (batched)
     # Expected shapes:
     #   upper_weights_cuda: (B, 8) or (8,)

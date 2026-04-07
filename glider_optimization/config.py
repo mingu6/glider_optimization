@@ -9,7 +9,6 @@ class RunConfig(BaseModel):
     seed: int = 0
     device: str = "cpu"
     max_outer_iters: int = 50
-    is_baseline: bool = False
     cost_target: float | None = None
     cost_target_min_iters: int = 0
     cost_residual_tol: float | None = None
@@ -36,20 +35,12 @@ class AirfoilConfig(BaseModel):
     gamma: float = 0.99
 
     model_config = {"arbitrary_types_allowed": True}
-    
 
-    #@field_validator("upper_initial_weights", "lower_initial_weights", mode="before")
     @field_validator(
         "upper_initial_weights", "lower_initial_weights",
         "upper_initial_weights_tip", "lower_initial_weights_tip",
         mode="before"
     )
-    # @classmethod
-    # def validate_array(cls, v: Any) -> np.ndarray:
-    #     arr = np.array(v, dtype=float)
-    #     if arr.shape[0] != 8:
-    #         raise ValueError(f"{arr} must have exactly 8 elements")
-    #     return arr
     @classmethod
     def validate_array(cls, v: Any) -> np.ndarray | None:
         if v is None:
@@ -73,26 +64,12 @@ class NeuralFoilSamplingConfig(BaseModel):
     # Optional: upgrade 2D sampling to 3D LLT
     use_3d_llt: bool = False
 
-    # Wing geometry (half-span stations)
-    llt_y_half: List[float] = Field(default_factory=lambda: [0.0, 0.105, 0.21, 0.315, 0.3675, 0.39375, 0.42])
-    llt_c_half: List[float] = Field(default_factory=lambda: [0.1875, 0.16875, 0.15, 0.13125, 0.121875, 0.117187, 0.1125])
-    llt_xle_half: List[float] = Field(default_factory=lambda: [0.0, 0.01875, 0.0375, 0.05625, 0.065625, 0.0703125, 0.075])
-    llt_twist_half: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-
-    # Physical constants
-    llt_rho_air: float = 1.225
-    llt_mu_air: float = 1.789e-5
-
     # Solver settings
     llt_n_iter: int = 30
     llt_max_iter: int = 200
     llt_beta: float = 0.5
     llt_tol: float = 1e-5
-    llt_enforce_symmetry: bool = True
 
-    # cuNF size used inside LLT (defaults to neuralFoil_size)
-    llt_model_size: str | None = None
-    
     @field_validator("neuralFoil_size")
     def check_neuralFoil_size(cls, v):
         allowed = {"xxsmall", "xsmall", "small", "medium", "large", "xlarge", "xxlarge", "xxxlarge"}

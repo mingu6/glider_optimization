@@ -88,7 +88,10 @@ class GliderPerching :
         l_w_cg = 0.5 * (l_w_i + l_w_f)           # structural CoM fallback (midchord)
         l_w_ac = l_w_i + 0.25 * (l_w_f - l_w_i)  # aerodynamic center fallback (c/4)
         chord = chord_2d
+        l_w_z = 0.0                                 # z-height of structural CoM; nonzero with dihedral
         #l_w_m = l_w_m_2d
+
+        dihedral_deg = float(wing_cfg.get("dihedral", 0.0)) if isinstance(wing_cfg, dict) else 0.0
 
         y_half = wing_cfg.get("y_half", None) if isinstance(wing_cfg, dict) else None
         c_half = wing_cfg.get("c_half", None) if isinstance(wing_cfg, dict) else None
@@ -104,6 +107,12 @@ class GliderPerching :
                     S_w = float(2.0 * S_half)
                     chord = float(S_w / span)
 
+                    den_cg = float(np.trapz(c, y))
+                    if den_cg > 0:
+                        # chord-weighted mean z-height for dihedral inertia arm
+                        z_vals = y * np.tan(np.deg2rad(dihedral_deg))
+                        l_w_z = float(np.trapz(c * z_vals, y) / den_cg)
+
                     if isinstance(xle_half, list) and len(xle_half) == len(y_half):
                         xle = np.asarray(xle_half, dtype=float)
                         den = float(np.trapz(c, y))
@@ -114,16 +123,11 @@ class GliderPerching :
         dynamic_centroid_enabled = bool(wing_cfg.get("dynamic_centroid", False)) if isinstance(wing_cfg, dict) else False
         if dynamic_centroid_enabled and isinstance(self.wing_reference_geometry, dict):
             l_override = self.wing_reference_geometry.get("l_w_m", None)
-            chord_override = self.wing_reference_geometry.get("chord_ref", None)
             if l_override is not None:
                 try:
-                    l_w_ac = float(l_override)
+                    # l_w_ac stays at c/4 (NeuralFoil convention — do NOT override)
+                    # chord stays fixed (planform geometry, not airfoil section shape)
                     l_w_cg = float(l_override)
-                except Exception:
-                    pass
-            if chord_override is not None:
-                try:
-                    chord = float(chord_override)
                 except Exception:
                     pass
 
@@ -144,7 +148,7 @@ class GliderPerching :
         m_e = 0.6 * m * S_e / (S_w + S_e)
         #l_f = -(l_w * m_w + (l + l_e) * m_e) / m_f      # vector to fuselage CoM
         l_f= -0.025
-        inertia = m_w * l_w ** 2 + m_e * (l_body + l_e) ** 2 + m_f * l_f ** 2
+        inertia = m_w * (l_w ** 2 + l_w_z ** 2) + m_e * (l_body + l_e) ** 2 + m_f * l_f ** 2
         
         # Declare system variables
         x = SX.sym("x")

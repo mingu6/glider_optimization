@@ -1,6 +1,5 @@
 from ..blockBase import Block
 from typing_extensions import override
-#from typing import override
 from ..config import Config
 from pathlib import Path
 from typing import Dict, Any
@@ -16,8 +15,8 @@ import torch
 import torch.optim.lr_scheduler as lr_scheduler
 import wandb
 import logging
-from ..utils.airfoil_debug import log_kulfan_parameters, log_backward_update, is_airfoil_debug_enabled
-from ..utils.spanwise_geometry import compute_dynamic_wing_reference_geometry
+from ..utils.spanwise_geometry import compute_dynamic_wing_reference_geometry, _section_centroid_from_kulfan
+from matplotlib.lines import Line2D
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -34,11 +33,6 @@ class Airfoil3D(Block):
         self.leading_edge_param = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
         self.TE_thickness_param = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
         
-        # self.upper_params_tip = nn.Parameter(torch.tensor(af_conf.upper_initial_weights, dtype=torch.float32))
-        # self.lower_params_tip = nn.Parameter(torch.tensor(af_conf.lower_initial_weights, dtype=torch.float32))
-        # self.leading_edge_param_tip = nn.Parameter(torch.tensor([af_conf.leading_edge_weight], dtype=torch.float32))
-        # self.TE_thickness_param_tip = nn.Parameter(torch.tensor([af_conf.TE_thickness], dtype=torch.float32))
-
         tip_upper = af_conf.upper_initial_weights_tip if af_conf.upper_initial_weights_tip is not None else af_conf.upper_initial_weights
         tip_lower = af_conf.lower_initial_weights_tip if af_conf.lower_initial_weights_tip is not None else af_conf.lower_initial_weights
         tip_le = af_conf.leading_edge_weight_tip if af_conf.leading_edge_weight_tip is not None else af_conf.leading_edge_weight
@@ -48,9 +42,6 @@ class Airfoil3D(Block):
         self.lower_params_tip = nn.Parameter(torch.tensor(tip_lower, dtype=torch.float32))
         self.leading_edge_param_tip = nn.Parameter(torch.tensor([tip_le], dtype=torch.float32))
         self.TE_thickness_param_tip = nn.Parameter(torch.tensor([tip_te], dtype=torch.float32))
-        # with torch.no_grad():
-        #     self.upper_params_tip[0].add_(1e-4)
-
         self.optimizer = torch.optim.Adam(
             [
                 self.upper_params, self.lower_params, self.leading_edge_param, self.TE_thickness_param,
@@ -93,22 +84,6 @@ class Airfoil3D(Block):
                 n_span_stations=self._n_span_stations,
             )
 
-        if is_airfoil_debug_enabled() and (self._iter % self.config.io.log_every == 0):
-            log_kulfan_parameters(
-                iteration=self._iter,
-                stage="iteration_start",
-                logger=self.logger,
-                checkpoint_dir=self.config.io.checkpoint_dir,
-                root_upper=self.upper_params,
-                root_lower=self.lower_params,
-                root_le=self.leading_edge_param,
-                root_te=self.TE_thickness_param,
-                tip_upper=self.upper_params_tip,
-                tip_lower=self.lower_params_tip,
-                tip_le=self.leading_edge_param_tip,
-                tip_te=self.TE_thickness_param_tip,
-            )
-
         if self._iter % self.config.io.log_every == 0:
             self.plot()
             if self.config.io.wandb.enabled:
@@ -130,63 +105,11 @@ class Airfoil3D(Block):
         return out
 
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, Any]:
-        if is_airfoil_debug_enabled():
-            before_root_upper = self.upper_params.detach().clone()
-            before_root_lower = self.lower_params.detach().clone()
-            before_root_le = self.leading_edge_param.detach().clone()
-            before_root_te = self.TE_thickness_param.detach().clone()
-            before_tip_upper = self.upper_params_tip.detach().clone()
-            before_tip_lower = self.lower_params_tip.detach().clone()
-            before_tip_le = self.leading_edge_param_tip.detach().clone()
-            before_tip_te = self.TE_thickness_param_tip.detach().clone()
-
         self._apply_gradients(upstream_grads)
-
-        if is_airfoil_debug_enabled():
-            grad_root_upper = self.upper_params.grad.detach().clone() if self.upper_params.grad is not None else None
-            grad_root_lower = self.lower_params.grad.detach().clone() if self.lower_params.grad is not None else None
-            grad_root_le = self.leading_edge_param.grad.detach().clone() if self.leading_edge_param.grad is not None else None
-            grad_root_te = self.TE_thickness_param.grad.detach().clone() if self.TE_thickness_param.grad is not None else None
-            grad_tip_upper = self.upper_params_tip.grad.detach().clone() if self.upper_params_tip.grad is not None else None
-            grad_tip_lower = self.lower_params_tip.grad.detach().clone() if self.lower_params_tip.grad is not None else None
-            grad_tip_le = self.leading_edge_param_tip.grad.detach().clone() if self.leading_edge_param_tip.grad is not None else None
-            grad_tip_te = self.TE_thickness_param_tip.grad.detach().clone() if self.TE_thickness_param_tip.grad is not None else None
 
         self.optimizer.step()
         self._step_scheduler()
         self._enforce_constraints()
-
-        if is_airfoil_debug_enabled():
-            log_backward_update(
-                iteration=self._iter,
-                checkpoint_dir=self.config.io.checkpoint_dir,
-                before_root_upper=before_root_upper,
-                before_root_lower=before_root_lower,
-                before_root_le=before_root_le,
-                before_root_te=before_root_te,
-                before_tip_upper=before_tip_upper,
-                before_tip_lower=before_tip_lower,
-                before_tip_le=before_tip_le,
-                before_tip_te=before_tip_te,
-                grad_root_upper=grad_root_upper,
-                grad_root_lower=grad_root_lower,
-                grad_root_le=grad_root_le,
-                grad_root_te=grad_root_te,
-                grad_tip_upper=grad_tip_upper,
-                grad_tip_lower=grad_tip_lower,
-                grad_tip_le=grad_tip_le,
-                grad_tip_te=grad_tip_te,
-                after_root_upper=self.upper_params,
-                after_root_lower=self.lower_params,
-                after_root_le=self.leading_edge_param,
-                after_root_te=self.TE_thickness_param,
-                after_tip_upper=self.upper_params_tip,
-                after_tip_lower=self.lower_params_tip,
-                after_tip_le=self.leading_edge_param_tip,
-                after_tip_te=self.TE_thickness_param_tip,
-            )
-        
-        if not self.config.io.wandb.enabled:
             gif_every = max(1, int(getattr(self.config.io, "airfoil_gif_every", self.config.io.log_every)))
             is_final_iter = self._iter == self.config.run.max_outer_iters - 1
             if self._iter == 0 or ((self._iter + 1) % gif_every == 0) or is_final_iter:
@@ -269,10 +192,11 @@ class Airfoil3D(Block):
         self.lower_params.grad = upstream_grads["dlower_params"]
         self.leading_edge_param.grad = upstream_grads["dleading_edge_param"]
         self.TE_thickness_param.grad = upstream_grads["dTE_thickness_param"]
-        self.upper_params_tip.grad = upstream_grads["dupper_params_tip"]
-        self.lower_params_tip.grad = upstream_grads["dlower_params_tip"]
-        self.leading_edge_param_tip.grad = upstream_grads["dleading_edge_param_tip"]
-        self.TE_thickness_param_tip.grad = upstream_grads["dTE_thickness_param_tip"]
+        # Tip keys are absent in 2D mode (NeuralFoilSampling); fall back to root grads.
+        self.upper_params_tip.grad = upstream_grads.get("dupper_params_tip", upstream_grads["dupper_params"])
+        self.lower_params_tip.grad = upstream_grads.get("dlower_params_tip", upstream_grads["dlower_params"])
+        self.leading_edge_param_tip.grad = upstream_grads.get("dleading_edge_param_tip", upstream_grads["dleading_edge_param"])
+        self.TE_thickness_param_tip.grad = upstream_grads.get("dTE_thickness_param_tip", upstream_grads["dTE_thickness_param"])
 
     def _step_scheduler(self):
         if self.scheduler is None:
@@ -334,7 +258,53 @@ class Airfoil3D(Block):
         ax.plot(x_tip, y_tip, ".-", color="#d97706", zorder=13, label="Tip")
         ax.fill(x_tip, y_tip, color="#d97706", alpha=0.15, zorder=12)
 
-        ax.legend(loc="upper right", frameon=False)
+        # Centroids (x/c, z/c) of root, tip, and chord-weighted wing sections
+        root_kulfan = {
+            "upper_weights": self.upper_params.detach().numpy(),
+            "lower_weights": self.lower_params.detach().numpy(),
+            "leading_edge_weight": float(self.leading_edge_param.detach().numpy()[0]),
+            "TE_thickness": float(self.TE_thickness_param.detach().numpy()[0]),
+        }
+        tip_kulfan = {
+            "upper_weights": self.upper_params_tip.detach().numpy(),
+            "lower_weights": self.lower_params_tip.detach().numpy(),
+            "leading_edge_weight": float(self.leading_edge_param_tip.detach().numpy()[0]),
+            "TE_thickness": float(self.TE_thickness_param_tip.detach().numpy()[0]),
+        }
+        cx_root, cz_root = _section_centroid_from_kulfan(root_kulfan)
+        cx_tip, cz_tip = _section_centroid_from_kulfan(tip_kulfan)
+
+        # Chord-weighted wing centroid (linear taper: weight root by ~2/3, tip by ~1/3)
+        plane_cfg = getattr(self.config, "plane", {}) or {}
+        wing_cfg = plane_cfg.get("wing", {}) if isinstance(plane_cfg, dict) else {}
+        c_half = np.array(wing_cfg.get("c_half", [1.0, 1.0]), dtype=float) if isinstance(wing_cfg, dict) else np.array([1.0, 1.0])
+        y_half = np.array(wing_cfg.get("y_half", [0.0, 1.0]), dtype=float) if isinstance(wing_cfg, dict) else np.array([0.0, 1.0])
+        half_span = max(float(y_half[-1]), 1e-12)
+        eta = np.clip(y_half / half_span, 0.0, 1.0)
+        cx_span = (1.0 - eta) * cx_root + eta * cx_tip
+        cz_span = (1.0 - eta) * cz_root + eta * cz_tip
+        den = float(np.trapz(c_half, y_half))
+        if den > 0:
+            cx_wing = float(np.trapz(c_half * cx_span, y_half) / den)
+            cz_wing = float(np.trapz(c_half * cz_span, y_half) / den)
+        else:
+            cx_wing, cz_wing = float(np.mean(cx_span)), float(np.mean(cz_span))
+
+        ax.scatter(cx_root, cz_root, color="#280887", marker="o", s=60, alpha=0.4, zorder=15)
+        ax.scatter(cx_tip,  cz_tip,  color="#d97706", marker="o", s=60, alpha=0.4, zorder=15)
+        ax.scatter(cx_wing, cz_wing, color="black",   marker="o", s=60, zorder=16, label=f"Wing centroid")
+
+        legend_elements = [
+            Line2D([0], [0], color="#280887", lw=2, label="Root"),
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="#280887",
+                   markersize=8, alpha=0.4, label=f"  centroid x/c={cx_root:.3f}"),
+            Line2D([0], [0], color="#d97706", lw=2, label="Tip"),
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="#d97706",
+                   markersize=8, alpha=0.4, label=f"  centroid x/c={cx_tip:.3f}"),
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="black",
+                   markersize=8, label=f"Wing centroid x/c={cx_wing:.3f}"),
+        ]
+        ax.legend(handles=legend_elements, loc="upper right", frameon=False, fontsize=7)
         
         ax.text(
             0.02, 0.95, f"{len(self.frames)}", 

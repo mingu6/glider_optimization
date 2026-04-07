@@ -64,12 +64,37 @@ def horseshoe(P, A, B, A_w, B_w, gamma=1.0, rc=0.01):
             segment_core(P, B,   B_w, gamma, rc) +
             segment_core(P, A_w, A,   gamma, rc))
 
-def build_llt_system(y_half, c_half, xle_half, twist_half):
-    
+def build_llt_system(y_half, c_half, xle_half, twist_half, z_half=None, dihedral_deg=0.0):
+    """
+    Build the LLT influence matrices for the full wing.
+
+    Parameters
+    ----------
+    y_half, c_half, xle_half, twist_half : array-like
+        Half-wing station coordinates (root → tip).
+    z_half : array-like, optional
+        Vertical z-positions of the half-wing stations (root → tip, in metres).
+        If None, computed from ``dihedral_deg`` as ``y_half * tan(dihedral_deg)``.
+    dihedral_deg : float
+        Dihedral angle in degrees.  Used only when ``z_half`` is None.
+        Γ = 0 (default) → flat wing → identical to previous behaviour.
+    """
     y_half    = np.array(y_half, dtype=float)
     c_half    = np.array(c_half, dtype=float)
     xle_half  = np.array(xle_half, dtype=float)
     twist_half= np.array(twist_half, dtype=float)
+
+    # --- z-coordinates for dihedral (Model B: sections translate, don't rotate) ---
+    if z_half is None:
+        z_half = y_half * np.tan(np.deg2rad(float(dihedral_deg)))
+    z_half = np.array(z_half, dtype=float)
+
+    # Mirror z symmetrically (both half-wings go UP with dihedral: z(-y) = z(|y|))
+    y_full_unsorted = np.concatenate((-y_half[::-1], y_half[1:]))
+    z_full_unsorted = np.concatenate(( z_half[::-1], z_half[1:]))
+    sort_order = np.argsort(y_full_unsorted)
+    z_full = z_full_unsorted[sort_order]
+
     y, c, xle, twist = mirror_full(y_half, c_half, xle_half, twist_half)
     
     vortex_location = 0.25  # as fraction of local chord
@@ -87,39 +112,20 @@ def build_llt_system(y_half, c_half, xle_half, twist_half):
     xle_mid = 0.5*(xleA + xleB)
     tw_mid = 0.5*(twA + twB)
 
+    # Panel z-coordinates (from dihedral)
+    zA = z_full[:-1]
+    zB = z_full[1:]
+    z_mid = 0.5 * (zA + zB)
+
     x_qA = xleA + vortex_location*cA
     x_qB = xleB + vortex_location*cB
     x_cp = xle_mid + ctrl_point_location*c_mid
 
-    # Control points at 0.75 c, slightly below the surface
-    CPts = np.column_stack([x_cp, y_mid, -0.01 * c_mid])
+    # Control points at 0.25 c, slightly below the surface (z_mid offsets for dihedral)
+    CPts = np.column_stack([x_cp, y_mid, z_mid - 0.01 * c_mid])
 
     dy = np.abs(yB - yA)
     S = np.sum(0.5*(cA + cB) * dy)
-
-    # ── Vortex-core saturation guard ─────────────────────────────────────────
-    # rc_nf = 0.25 * c_mid is the regularisation radius used for self-induction
-    # (the diagonal of D_nf).  When dy < rc_nf the control point sits inside
-    # its own core: the bound-vortex self-induction is suppressed to ≈ 0,
-    # downwash correction at that panel is lost, and cl is evaluated at the
-    # full geometric AoA — producing a spurious circulation spike at the root
-    # and corrupting induced-drag and implicit-adjoint gradients.
-    rc_nf_pan = 0.25 * c_mid
-    saturated = dy < rc_nf_pan
-    if saturated.any():
-        bad_idx  = np.where(saturated)[0]
-        worst    = bad_idx[np.argmax(rc_nf_pan[bad_idx] / dy[bad_idx])]
-        import warnings
-        warnings.warn(
-            f"build_llt_system: {saturated.sum()} panel(s) have dy < rc_nf "
-            f"(worst: panel {worst}, y={y_mid[worst]:.4f} m, "
-            f"dy={dy[worst]*1e3:.1f} mm, rc_nf={rc_nf_pan[worst]*1e3:.1f} mm). "
-            "Core saturation will suppress self-induction and produce a spurious "
-            "circulation spike. Reduce panel count or use a half-cosine (Multhopp) "
-            "distribution to widen the innermost panels.",
-            stacklevel=2,
-        )
-    # ─────────────────────────────────────────────────────────────────────────
 
     # Quarter-chord positions per panel (midpoints)
     x_c4A = xleA + 0.25*cA
@@ -135,8 +141,15 @@ def build_llt_system(y_half, c_half, xle_half, twist_half):
     # Mean aerodynamic chord (length) for coefficient normalization
     cbar = np.sum(0.5*(cA**2 + cB**2) * dy) / S
 
-    A_q  = np.column_stack([x_qA, yA, np.zeros_like(yA)])
-    B_q  = np.column_stack([x_qB, yB, np.zeros_like(yB)])
+    A_q  = np.column_stack([x_qA, yA, zA])
+    B_q  = np.column_stack([x_qB, yB, zB])
+
+    # Per-panel sweep: horizontal-plane projection of the ¼-chord vortex segment.
+    # cos(Λ_i) = |Δy| / sqrt(Δx_c4² + Δy²)  — separates sweep from dihedral z.
+    _dx_c4     = B_q[:, 0] - A_q[:, 0]
+    _dy_pan    = np.abs(B_q[:, 1] - A_q[:, 1])
+    cos_sweep  = _dy_pan / np.sqrt(_dx_c4**2 + _dy_pan**2)  # (n_pan,)
+    cos2_sweep = cos_sweep ** 2                              # (n_pan,)
 
     # Wake from the back edge (0.75 c)
     Lwake = 20.0 * max(c_mid.max(), 1.0)
@@ -168,7 +181,8 @@ def build_llt_system(y_half, c_half, xle_half, twist_half):
 
     return {'D_nf':D_nf,'D_tr':D_tr,'mirror_of':mirror_of, 'c_mid':c_mid, 'y_mid':y_mid,
                       'cbar':cbar,'x_c4_mid':x_c4_mid, 'x_ref':x_ref, 'z_ref':z_ref, 'dy':dy, 'S':S,
-                       'n_pan':n_pan, 'tw_mid':tw_mid, 'span': max(y_half)*2.0}
+                       'n_pan':n_pan, 'tw_mid':tw_mid, 'span': max(y_half)*2.0,
+                       'cos_sweep': cos_sweep, 'cos2_sweep': cos2_sweep}
 
 
 
@@ -186,6 +200,8 @@ class LLTConst:
     D_nf: torch.Tensor
     D_tr: torch.Tensor
     mirror_of: torch.Tensor
+    cos_sweep: torch.Tensor   # (n_pan,)  cos(Λ) per panel, horizontal-plane sweep
+    cos2_sweep: torch.Tensor  # (n_pan,)  cos²(Λ)
 
     # flow
     rho: torch.Tensor
@@ -219,15 +235,20 @@ def _G(
 
     w_nf = Gamma @ const.D_nf.T  # (B,n_pan)
 
-    alpha_geo = alpha + tw
-    alpha_eff = alpha_geo - torch.rad2deg(torch.atan2(w_nf, V))
+    cos_sw  = const.cos_sweep.unsqueeze(0)   # (1, n_pan)
+    cos2_sw = const.cos2_sweep.unsqueeze(0)  # (1, n_pan)
+    V_n     = V * cos_sw                     # (B, n_pan)  V·cosΛ
+    c_eff   = c * cos_sw                     # (1, n_pan)  c·cosΛ  (section chord normal to LE)
 
-    Re = const.rho * V * c / const.mu
+    alpha_geo = alpha + tw
+    alpha_eff = alpha_geo - torch.rad2deg(torch.atan2(w_nf, V_n))
+
+    Re = const.rho * V_n * c_eff / const.mu  # ρVc·cos²Λ/μ
 
     aero = _eval_nf_batched(upper, lower, LE, TE, alpha_eff, Re, const)
     cl = aero["CL"]
 
-    Gamma_star = 0.5 * V * c * cl
+    Gamma_star = 0.5 * V_n * c_eff * cl      # ½Vc·cos²Λ·Cl
     Gamma_new = (1.0 - const.beta) * Gamma + const.beta * Gamma_star
 
     if const.enforce_symmetry:
@@ -370,19 +391,25 @@ def _compute_coeffs(
     w_tr = Gamma @ const.D_tr.T
     w_nf= Gamma @ const.D_nf.T 
 
+    cos_sw  = const.cos_sweep.unsqueeze(0)   # (1, n_pan)
+    cos2_sw = const.cos2_sweep.unsqueeze(0)  # (1, n_pan)
+    cos3_sw = cos_sw * cos2_sw               # (1, n_pan)  cos³(Λ) for moment
+    V_n     = V * cos_sw                     # (B, n_pan)  V·cosΛ
+    c_eff   = c * cos_sw                     # (1, n_pan)  c·cosΛ  (section chord normal to LE)
+
     alpha_geo = alpha + tw
-    alpha_eff = alpha_geo - torch.rad2deg(torch.atan2(w_nf, V))
-    Re = const.rho * V * c / const.mu
+    alpha_eff = alpha_geo - torch.rad2deg(torch.atan2(w_nf, V_n))
+    Re = const.rho * V_n * c_eff / const.mu  # ρVc·cos²Λ/μ
 
     aero = _eval_nf_batched(upper, lower, LE, TE, alpha_eff, Re, const)
-    cl = aero["CL"]
+    # cl = aero["CL"]
     cd = aero["CD"]
     cm = aero["CM"]
 
     q = 0.5 * const.rho * (V ** 2)  # (B,1)
 
-    Lp = q * c * cl
-    Dp = q * c * cd
+    # Lp = q * c * cl # Local lift per unit span (before integrating with dy), unused in final CL but useful for debugging and understanding the distribution of lift along the span.
+    Dp = q * c * cos2_sw * cd   # q·c·cos²Λ·Cd  (d_n/dy = 1/cosΛ cancels one power)
     Di = const.rho * Gamma * w_tr #Treffz plane here for better momentum conservation - consistent with flow5 methodology
 
     # Integrals
@@ -394,7 +421,7 @@ def _compute_coeffs(
     CD = D / denom
 
     # Pitching moment about the quarter-chord line (NeuralFoil CM is about c/4)
-    Mprime_c4 = q * (c ** 2) * cm
+    Mprime_c4 = q * (c ** 2) * cos3_sw * cm
     M_pitch = torch.sum(Mprime_c4 * dy, dim=-1)
 
     denom_pitch = (q.squeeze(-1) * const.S * const.cbar).clamp_min(1e-30)
@@ -429,6 +456,8 @@ class LLTImplicitFn(torch.autograd.Function):
         D_nf: torch.Tensor,
         D_tr: torch.Tensor,
         mirror_of: torch.Tensor,
+        cos_sweep: torch.Tensor,
+        cos2_sweep: torch.Tensor,
         rho: torch.Tensor,
         mu: torch.Tensor,
         beta_t: torch.Tensor,
@@ -447,6 +476,7 @@ class LLTImplicitFn(torch.autograd.Function):
         const = LLTConst(
             dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, span=span,
             D_nf=D_nf, D_tr=D_tr, mirror_of=mirror_of,
+            cos_sweep=cos_sweep, cos2_sweep=cos2_sweep,
             rho=rho, mu=mu,
             n_iter=int(n_iter_t.item()),
             beta=float(beta_t.item()),
@@ -460,14 +490,18 @@ class LLTImplicitFn(torch.autograd.Function):
         B = alpha2.shape[0]
 
         with torch.no_grad():
-            # Initial guess via NF at alpha_geo
-            tw0 = const.tw.unsqueeze(0)
-            c0 = const.c.unsqueeze(0)
+            # Initial guess via NF at alpha_geo (sweep-corrected)
+            tw0       = const.tw.unsqueeze(0)
+            c0        = const.c.unsqueeze(0)
+            cos_sw0   = const.cos_sweep.unsqueeze(0)
+            cos2_sw0  = const.cos2_sweep.unsqueeze(0)
+            V_n0      = V2 * cos_sw0
+            c_eff0    = c0 * cos_sw0   # c·cosΛ
             alpha_geo = alpha2 + tw0
-            Re = const.rho * V2 * c0 / const.mu
+            Re = const.rho * V_n0 * c_eff0 / const.mu  # ρVc·cos²Λ/μ
 
             aero0 = _eval_nf_batched(upper, lower, LE, TE, alpha_geo, Re, const)
-            Gamma = 0.5 * V2 * c0 * aero0["CL"]
+            Gamma = 0.5 * V_n0 * c_eff0 * aero0["CL"]  # ½Vc·cos²Λ·Cl
 
             max_iter = int(max_iter_t.item())
             n_iter = const.n_iter
@@ -527,15 +561,19 @@ class LLTImplicitFn(torch.autograd.Function):
             C = _compute_coeffs(Gamma_star, alpha2, V2, upper, lower, LE, TE, const)
             
             # --- Panel-wise conditions used for NF (for confidence diagnostics) ---
-            tw0 = const.tw.unsqueeze(0)           # (1, n_pan)
-            c0  = const.c.unsqueeze(0)            # (1, n_pan)
+            tw0        = const.tw.unsqueeze(0)             # (1, n_pan)
+            c0         = const.c.unsqueeze(0)              # (1, n_pan)
+            cos_sw_d   = const.cos_sweep.unsqueeze(0)      # (1, n_pan)
+            cos2_sw_d  = const.cos2_sweep.unsqueeze(0)     # (1, n_pan)
+            V_n_d      = V2 * cos_sw_d                     # (B, n_pan)
+            c_eff_d    = c0 * cos_sw_d                     # (1, n_pan)  c·cosΛ
 
             # induced normal velocity at panels (same as in _compute_coeffs)
-            w_nf = Gamma_star @ const.D_nf.T      # (B, n_pan)
+            w_nf = Gamma_star @ const.D_nf.T              # (B, n_pan)
 
-            alpha_geo = alpha2 + tw0              # (B, n_pan)
-            alpha_eff_pan = alpha_geo - torch.rad2deg(torch.atan2(w_nf, V2))  # (B, n_pan)
-            Re_pan = const.rho * V2 * c0 / const.mu                            # (B, n_pan)
+            alpha_geo     = alpha2 + tw0                                                       # (B, n_pan)
+            alpha_eff_pan = alpha_geo - torch.rad2deg(torch.atan2(w_nf, V_n_d))               # (B, n_pan)
+            Re_pan        = const.rho * V_n_d * c_eff_d / const.mu                            # (B, n_pan)
 
             # detach: confidence is a diagnostic / constraint input, not part of implicit adjoint
             alpha_eff_pan_out = alpha_eff_pan.detach()
@@ -553,7 +591,9 @@ class LLTImplicitFn(torch.autograd.Function):
         ctx.save_for_backward(
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
-            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
+            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of,
+            cos_sweep, cos2_sweep,
+            rho, mu,
             beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
         )
         return C, alpha_eff_pan_out, Re_pan_out  # (B,3)
@@ -561,22 +601,21 @@ class LLTImplicitFn(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_C: torch.Tensor, grad_alpha_eff_pan=None, grad_Re_pan=None):
         """
-        Matrix-free implicit backward using GMRES on (dF/dGamma)^T lambda = dL/dGamma.
+        Batched implicit backward via explicit Jacobian + torch.linalg.solve.
 
-        Removes the dense Jacobian materialization:
-            J = autograd.functional.jacobian(...)
-        which costs ~O(n_pan) residual evaluations and is spiky/slow.
+        Builds the (B, n_pan, n_pan) block-diagonal Jacobian dF/dGamma with
+        exactly n_pan full-batch VJP passes (one per row), then solves
+        J^T lambda = dL/dGamma for all B items simultaneously via batched LU.
 
-        Instead:
-        - Define JT_mv(v) = J^T v via a VJP:
-              JT_mv(v) = d/dGamma <F(Gamma), v>
-        - Solve for lambda with GMRES using only JT_mv.
+        Cost: n_pan NF calls (vs. up to 40*B in the old per-item GMRES loop).
         """
         saved = ctx.saved_tensors
         (
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
-            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of, rho, mu,
+            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of,
+            cos_sweep, cos2_sweep,
+            rho, mu,
             beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
         ) = saved
 
@@ -584,6 +623,7 @@ class LLTImplicitFn(torch.autograd.Function):
         const = LLTConst(
             dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, span=span,
             D_nf=D_nf, D_tr=D_tr, mirror_of=mirror_of,
+            cos_sweep=cos_sweep, cos2_sweep=cos2_sweep,
             rho=rho, mu=mu,
             n_iter=int(n_iter_t.item()),
             beta=float(beta_t.item()),
@@ -591,121 +631,6 @@ class LLTImplicitFn(torch.autograd.Function):
             enforce_symmetry=bool(enforce_sym_t.item() > 0.5),
             model_size=model_size,
         )
-
-        # -------------------------
-        # Helper: GMRES (Givens)
-        # -------------------------
-        def gmres_solve(matvec, b, max_iter=40, tol=1e-6):
-            """
-            Solve A x = b using GMRES with Givens rotations.
-
-            - Works on CPU/CUDA/MPS (no torch.linalg.solve)
-            - matvec: callable(v) -> A v
-            - b: (n,) tensor
-            """
-            n = b.numel()
-            device = b.device
-            dtype = b.dtype
-
-            # x0 = 0
-            x = torch.zeros_like(b)
-            r0 = b - matvec(x)
-            beta = torch.sqrt(torch.sum(r0 * r0))
-
-            # If already converged
-            if float(beta) < tol:
-                return x
-
-            # Krylov basis V and Hessenberg H
-            V = []
-            V.append(r0 / beta)
-
-            H = torch.zeros((max_iter + 1, max_iter), device=device, dtype=dtype)
-            cs = torch.zeros((max_iter,), device=device, dtype=dtype)  # cos
-            sn = torch.zeros((max_iter,), device=device, dtype=dtype)  # sin
-
-            # g is RHS in least squares problem
-            g = torch.zeros((max_iter + 1,), device=device, dtype=dtype)
-            g[0] = beta
-
-            def apply_givens(h_col, k):
-                # Apply previous Givens rotations to the new Hessenberg column
-                for i in range(k):
-                    temp = cs[i] * h_col[i] + sn[i] * h_col[i + 1]
-                    h_col[i + 1] = -sn[i] * h_col[i] + cs[i] * h_col[i + 1]
-                    h_col[i] = temp
-                return h_col
-
-            def make_givens(a, b):
-                # Compute Givens rotation (c,s) that zeros b
-                if float(b) == 0.0:
-                    return torch.tensor(1.0, device=device, dtype=dtype), torch.tensor(0.0, device=device, dtype=dtype)
-                r = torch.sqrt(a * a + b * b)
-                c = a / r
-                s = b / r
-                return c, s
-
-            k_final = -1
-            for k in range(max_iter):
-                # Arnoldi step
-                w = matvec(V[k])
-
-                # Modified Gram-Schmidt
-                for j in range(k + 1):
-                    H[j, k] = torch.sum(w * V[j])
-                    w = w - H[j, k] * V[j]
-
-                H[k + 1, k] = torch.sqrt(torch.sum(w * w))
-                if float(H[k + 1, k]) != 0.0:
-                    V.append(w / H[k + 1, k])
-                else:
-                    # happy breakdown
-                    V.append(torch.zeros_like(w))
-
-                # Apply previous Givens to this column
-                h_col = H[:, k]
-                h_col = apply_givens(h_col, k)
-
-                # New Givens to zero H[k+1,k]
-                c_k, s_k = make_givens(h_col[k], h_col[k + 1])
-                cs[k] = c_k
-                sn[k] = s_k
-
-                # Apply to Hessenberg column
-                temp = cs[k] * h_col[k] + sn[k] * h_col[k + 1]
-                h_col[k + 1] = -sn[k] * h_col[k] + cs[k] * h_col[k + 1]
-                h_col[k] = temp
-
-                # Apply to g
-                temp_g = cs[k] * g[k] + sn[k] * g[k + 1]
-                g[k + 1] = -sn[k] * g[k] + cs[k] * g[k + 1]
-                g[k] = temp_g
-
-                # Residual norm is |g[k+1]|
-                res = torch.abs(g[k + 1])
-                if float(res) <= tol * float(beta):
-                    k_final = k
-                    break
-
-            if k_final < 0:
-                k_final = max_iter - 1
-
-            # Solve upper triangular system R y = g (back substitution)
-            m = k_final + 1
-            R = H[:m, :m]
-            y_ls = g[:m].clone()
-
-            y = torch.zeros((m,), device=device, dtype=dtype)
-            for i in range(m - 1, -1, -1):
-                ssum = torch.sum(R[i, i + 1:m] * y[i + 1:m]) if i + 1 < m else torch.tensor(0.0, device=device, dtype=dtype)
-                y[i] = (y_ls[i] - ssum) / R[i, i]
-
-            # x = V_m @ y
-            x = torch.zeros_like(b)
-            for i in range(m):
-                x = x + y[i] * V[i]
-
-            return x
 
         # -------------------------
         # Main implicit backward
@@ -722,46 +647,29 @@ class LLTImplicitFn(torch.autograd.Function):
             rhs = torch.autograd.grad(L, Gamma, retain_graph=True, create_graph=False)[0]
 
             B, n_pan = Gamma.shape
-            lambda_all = torch.zeros_like(Gamma)
 
-            # For matrix-free VJP, we need F connected to Gamma with a graph.
-            # We'll solve per batch item for simplicity (B is usually small).
-            for b in range(B):
-                gb = Gamma[b:b+1]  # (1, n_pan)
+            # Build (B, n_pan, n_pan) Jacobian dF/dGamma with n_pan full-batch VJP
+            # passes. F[b, i] depends only on Gamma[b, :] (no cross-batch coupling),
+            # so one VJP with mask[:, i]=1 gives row i for all B items at once.
+            F_all = _F(Gamma, alpha2, V2, upper, lower, LE, TE, const)  # (B, n_pan)
+            J = torch.zeros(B, n_pan, n_pan, device=Gamma.device, dtype=Gamma.dtype)
+            for i in range(n_pan):
+                mask = torch.zeros_like(F_all)
+                mask[:, i] = 1.0
+                (row_i,) = torch.autograd.grad(
+                    F_all, Gamma,
+                    grad_outputs=mask,
+                    retain_graph=(i < n_pan - 1),
+                    create_graph=False,
+                )
+                J[:, i, :] = row_i  # J[b, i, j] = dF[b,i]/dGamma[b,j]
 
-                def JT_mv(v: torch.Tensor) -> torch.Tensor:
-                    """
-                    Compute (dF/dGamma)^T v for this batch item using a VJP.
-                    v: (n_pan,)
-                    returns: (n_pan,)
-                    """
-                    v = v.reshape(1, n_pan)
+            # Solve J^T lambda = rhs for all B items in one batched LAPACK call
+            lambda_all = torch.linalg.solve(
+                J.mT,               # (B, n_pan, n_pan)
+                rhs.unsqueeze(-1),  # (B, n_pan, 1)
+            ).squeeze(-1)           # (B, n_pan)
 
-                    F_b = _F(
-                        gb,
-                        alpha2[b:b+1],
-                        V2[b:b+1],
-                        upper, lower, LE, TE,
-                        const,
-                    )  # (1, n_pan)
-
-                    # VJP: d/dGamma <F, v>
-                    JT_v = torch.autograd.grad(
-                        outputs=F_b,
-                        inputs=gb,
-                        grad_outputs=v,
-                        retain_graph=True,
-                        create_graph=False,
-                        allow_unused=False,
-                    )[0]  # (1, n_pan)
-
-                    return JT_v.reshape(n_pan)
-
-                bvec = rhs[b].detach()
-                lam_b = gmres_solve(JT_mv, bvec, max_iter=min(40, n_pan), tol=1e-6)
-                lambda_all[b] = lam_b
-
-            # We do NOT want gradients flowing through GMRES internals
             lambda_all = lambda_all.detach()
 
             # Direct term: dL/dp (Kulfan only)
@@ -800,7 +708,6 @@ class LLTImplicitFn(torch.autograd.Function):
             g_upper, g_lower, g_LE, g_TE = out_grads
 
         # Return grads aligned with forward() inputs of LLTImplicitFn.apply(...)
-        # Updated to include max_iter_t parameter (one more None)
         return (
             None,  # alpha
             None,  # V
@@ -808,8 +715,12 @@ class LLTImplicitFn(torch.autograd.Function):
             g_lower,
             g_LE,
             g_TE,
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None
+            None, None, None, None, None, None, None, None,  # dy, y, c, tw, S, cbar, x_c4, span
+            None, None, None,                                 # D_nf, D_tr, mirror_of
+            None, None,                                       # cos_sweep, cos2_sweep
+            None, None,                                       # rho, mu
+            None, None, None, None, None,                     # beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
+            None, None,                                       # model_size_id, device_id
         )
 
 
@@ -817,106 +728,3 @@ class LLTImplicitFn(torch.autograd.Function):
 # Public helpers
 # ---------------------------------------------------------------------------
 
-def llt_const_from_config(nf_cfg, device: torch.device) -> LLTConst:
-    """
-    Build an ``LLTConst`` from a ``NeuralFoilSamplingConfig`` instance.
-
-    All geometry, physical constants and solver settings are read from the
-    config, so the caller does not need to pass them separately.
-    """
-    comp = build_llt_system(
-        nf_cfg.llt_y_half,
-        nf_cfg.llt_c_half,
-        nf_cfg.llt_xle_half,
-        nf_cfg.llt_twist_half,
-    )
-
-    model_size = nf_cfg.llt_model_size or nf_cfg.neuralFoil_size
-
-    def _t(val, dtype=torch.float32):
-        return torch.as_tensor(val, dtype=dtype, device=device)
-
-    return LLTConst(
-        dy=_t(comp["dy"]),
-        y=_t(comp["y_mid"]),
-        c=_t(comp["c_mid"]),
-        tw=_t(comp["tw_mid"]),
-        S=_t(comp["S"]),
-        cbar=_t(comp["cbar"]),
-        x_c4=_t(comp["x_c4_mid"]),
-        span=_t(comp["span"]),
-        D_nf=_t(comp["D_nf"]),
-        D_tr=_t(comp["D_tr"]),
-        mirror_of=_t(comp["mirror_of"], dtype=torch.long),
-        rho=_t(nf_cfg.llt_rho_air),
-        mu=_t(nf_cfg.llt_mu_air),
-        n_iter=nf_cfg.llt_n_iter,
-        beta=nf_cfg.llt_beta,
-        tol=nf_cfg.llt_tol,
-        enforce_symmetry=nf_cfg.llt_enforce_symmetry,
-        model_size=model_size,
-    )
-
-
-def run_llt(
-    alpha: torch.Tensor,
-    V: torch.Tensor,
-    upper: torch.Tensor,
-    lower: torch.Tensor,
-    LE: torch.Tensor,
-    TE: torch.Tensor,
-    const: LLTConst,
-    max_iter: int = 200,
-) -> torch.Tensor:
-    """
-    Run the LLT solver and return wing coefficients ``(B, 3)`` = [CL, CD, CM].
-
-    All constant geometry/physics/solver parameters are bundled in ``const``
-    (built via :func:`llt_const_from_config`).  The only variable inputs are
-    the aerodynamic operating conditions and the Kulfan airfoil parameters.
-
-    Args:
-        alpha:    Angle of attack, shape ``(B,)`` or ``(B, 1)``, degrees.
-        V:        Free-stream velocity, shape ``(B,)`` or ``(B, 1)``, m/s.
-        upper:    Kulfan upper weights, shape ``(8,)`` or ``(n_pan, 8)``.
-        lower:    Kulfan lower weights, shape ``(8,)`` or ``(n_pan, 8)``.
-        LE:       Leading-edge weight, scalar or shape ``(n_pan,)``.
-        TE:       TE thickness, scalar or shape ``(n_pan,)``.
-        const:    Pre-built :class:`LLTConst` (use :func:`llt_const_from_config`).
-        max_iter: Hard cap on Picard iterations (passed as ``max_iter_t``).
-
-    Returns:
-        Tensor of shape ``(B, 3)`` containing [CL, CD, CM] for each sample.
-    """
-    dev = alpha.device
-    _s = lambda v, dt=torch.float32: torch.as_tensor(v, dtype=dt, device=dev)
-
-    C, _, _ = LLTImplicitFn.apply(
-        alpha,
-        V,
-        upper,
-        lower,
-        LE,
-        TE,
-        const.dy,
-        const.y,
-        const.c,
-        const.tw,
-        const.S,
-        const.cbar,
-        const.x_c4,
-        const.span,
-        const.D_nf,
-        const.D_tr,
-        const.mirror_of,
-        const.rho,
-        const.mu,
-        _s(const.beta),
-        _s(const.tol),
-        _s(const.n_iter, torch.int64),
-        _s(max_iter, torch.int64),
-        _s(1.0 if const.enforce_symmetry else 0.0),
-        _s(_MODEL_SIZE_TO_ID[const.model_size], torch.int64),
-        _s(0, torch.int64),  # device_id (unused at runtime, kept for signature compat)
-    )
-    return C

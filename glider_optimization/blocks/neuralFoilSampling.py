@@ -1,6 +1,5 @@
 from ..blockBase import Block
 from typing_extensions import override
-#from typing import override
 from ..config import Config
 from ..utils.cu_kulfan_airfoil import get_aero_from_kulfan_parameters_cuda
 from typing import Dict, Any
@@ -51,19 +50,23 @@ class NeuralFoilSampling(Block):
         self._last_input = downstream_info
         
         kulfan_batch = {
-            "upper_weights_cuda": downstream_info["upper_weights"].repeat(B, 1),
-            "lower_weights_cuda": downstream_info["lower_weights"].repeat(B, 1),
-            "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B),
-            "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B),
+            "upper_weights_cuda": downstream_info["upper_weights"].detach().repeat(B, 1),
+            "lower_weights_cuda": downstream_info["lower_weights"].detach().repeat(B, 1),
+            "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].detach().repeat(B),
+            "TE_thickness_cuda": downstream_info["TE_thickness"].detach().repeat(B),
         }
    
-        self._last_aero_coeff = get_aero_from_kulfan_parameters_cuda(
-            kulfan_batch,
-            self.alpha_batch,
-            self.Re_batch,
-            device=self.device,
-            model_size=self.config.neuralFoilSampling.neuralFoil_size,
-        )
+        # Run in no_grad: backward() will re-run with gradients when needed.
+        # This avoids building a massive autograd graph through the xxxlarge network
+        # for all B samples during the forward pass (same pattern as LLTImplicitFn).
+        with torch.no_grad():
+            self._last_aero_coeff = get_aero_from_kulfan_parameters_cuda(
+                kulfan_batch,
+                self.alpha_batch,
+                self.Re_batch,
+                device=self.device,
+                model_size=self.config.neuralFoilSampling.neuralFoil_size,
+            )
         conf = self._last_aero_coeff.get("analysis_confidence")
         try:
             conf_mean = float(conf.mean().detach().cpu().item())
@@ -91,22 +94,23 @@ class NeuralFoilSampling(Block):
             }
             wandb.log(metrics, step=downstream_info["iteration"])
 
-        # Validation forward pass
+        # Validation forward pass (no_grad: outputs are detached below)
         B_val = self.alpha_val.shape[0]
         kulfan_batch_val = {
-            "upper_weights_cuda": downstream_info["upper_weights"].repeat(B_val, 1),
-            "lower_weights_cuda": downstream_info["lower_weights"].repeat(B_val, 1),
-            "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].repeat(B_val),
-            "TE_thickness_cuda": downstream_info["TE_thickness"].repeat(B_val),
+            "upper_weights_cuda": downstream_info["upper_weights"].detach().repeat(B_val, 1),
+            "lower_weights_cuda": downstream_info["lower_weights"].detach().repeat(B_val, 1),
+            "leading_edge_weight_cuda": downstream_info["leading_edge_weight"].detach().repeat(B_val),
+            "TE_thickness_cuda": downstream_info["TE_thickness"].detach().repeat(B_val),
         }
 
-        val_aero = get_aero_from_kulfan_parameters_cuda(
-            kulfan_batch_val,
-            self.alpha_val,
-            self.Re_val,
-            device=self.device,
-            model_size=self.config.neuralFoilSampling.neuralFoil_size,
-        )
+        with torch.no_grad():
+            val_aero = get_aero_from_kulfan_parameters_cuda(
+                kulfan_batch_val,
+                self.alpha_val,
+                self.Re_val,
+                device=self.device,
+                model_size=self.config.neuralFoilSampling.neuralFoil_size,
+            )
 
         return {
             "alpha": self.alpha_batch,
@@ -121,16 +125,37 @@ class NeuralFoilSampling(Block):
             "val_CL": val_aero["CL"].detach(),
             "val_CD": val_aero["CD"].detach(),
             "val_CM": val_aero["CM"].detach(),
-            "iteration": downstream_info["iteration"]
+            "iteration": downstream_info["iteration"],
+            "wing_reference_geometry": downstream_info.get("wing_reference_geometry"),
         }
 
     @override
     def backward(self, upstream_grads: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        CL = self._last_aero_coeff["CL"]
-        CD = self._last_aero_coeff["CD"]
-        CM = self._last_aero_coeff["CM"]
-        conf = self._last_aero_coeff["analysis_confidence"]
-        
+        upper = self._last_input["upper_weights"]
+        lower = self._last_input["lower_weights"]
+        LE = self._last_input["leading_edge_weight"]
+        TE = self._last_input["TE_thickness"]
+        B = self.alpha_batch.shape[0]
+
+        # Re-run forward pass with gradients enabled for differentiation.
+        kulfan_batch_bwd = {
+            "upper_weights_cuda": upper.repeat(B, 1),
+            "lower_weights_cuda": lower.repeat(B, 1),
+            "leading_edge_weight_cuda": LE.repeat(B),
+            "TE_thickness_cuda": TE.repeat(B),
+        }
+        aero = get_aero_from_kulfan_parameters_cuda(
+            kulfan_batch_bwd,
+            self.alpha_batch,
+            self.Re_batch,
+            device=self.device,
+            model_size=self.config.neuralFoilSampling.neuralFoil_size,
+        )
+        CL = aero["CL"]
+        CD = aero["CD"]
+        CM = aero["CM"]
+        conf = aero["analysis_confidence"]
+
         constraint = self.min_confidence - conf.mean() 
         constraint_violation = torch.relu(constraint)
         constraint_lagrangian = self.lambda_conf * constraint_violation + self.rho/2 * (constraint_violation**2)
@@ -157,11 +182,6 @@ class NeuralFoilSampling(Block):
             self.logger.critical("⚠️ NaN detected in NeuralFoilSampling feedforward CM")
                 
         dJ_dy = upstream_grads["dJ_dy"]
-        
-        upper = self._last_input["upper_weights"]
-        lower = self._last_input["lower_weights"]
-        LE = self._last_input["leading_edge_weight"]
-        TE = self._last_input["TE_thickness"]        
                 
         Y = torch.cat([CL, CD, CM], dim=0)
         

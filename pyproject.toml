@@ -1,13 +1,43 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "glider-optimization"
 version = "0.1.0"
+description = "Gradient-based nested co-design of aerodynamic shape and control for winged robots using NeuralFoil and lifting-line coupling."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0",
+  "pydantic>=2.0",
+  "numpy>=1.24",
+  "torch>=2.0",
+  "typing-extensions>=4.8",
+  "wandb>=0.16",
+  "aerosandbox",
+  "matplotlib>=3.7",
+  "imageio>=2.31",
+  "neuralfoil",
+  "casadi>=3.6",
+  "plotly>=5.18",
+  "pandas>=2.0",
+]
 
 [project.scripts]
 glider-opt = "glider_optimization.main:main"
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.4",
+  "black>=24.0",
+]
+
+[project.urls]
+Repository = "https://github.com/<your-user>/<your-repo>"
+
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["glider_optimization*"]
+namespaces = true

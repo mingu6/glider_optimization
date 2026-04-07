@@ -27,16 +27,21 @@ def build_half_wing_stations_from_cfg(wing_cfg: Dict[str, Any], n_span_stations:
     x0, x1 = _endpoints(xle_src, 0.0, 0.0)
     t0, t1 = _endpoints(twist_src, 0.0, 0.0)
 
+    dihedral_deg = float(wing_cfg.get("dihedral", 0.0)) if isinstance(wing_cfg, dict) else 0.0
+
     y_half = np.linspace(y0, y1, int(n_span_stations), dtype=float)
     c_half = np.linspace(c0, c1, int(n_span_stations), dtype=float)
     xle_half = np.linspace(x0, x1, int(n_span_stations), dtype=float)
     twist_half = np.linspace(t0, t1, int(n_span_stations), dtype=float)
+    z_half = y_half * np.tan(np.deg2rad(dihedral_deg))
 
     return {
         "y_half": y_half,
         "c_half": c_half,
         "xle_half": xle_half,
         "twist_half": twist_half,
+        "z_half": z_half,
+        "dihedral_deg": dihedral_deg,
     }
 
 
@@ -115,6 +120,11 @@ def compute_dynamic_wing_reference_geometry(
     else:
         l_w_m = float(np.trapz(c_half * x_centroid_span, y_half) / den)
 
+    # Chord-weighted mean z-height of the wing centroid (dihedral arm for inertia)
+    dihedral_deg = float(wing_cfg.get("dihedral", 0.0)) if isinstance(wing_cfg, dict) else 0.0
+    z_half = y_half * np.tan(np.deg2rad(dihedral_deg))
+    l_w_z = float(np.trapz(c_half * z_half, y_half) / den) if den > 0.0 else 0.0
+
     S_half = float(np.trapz(c_half, y_half))
     span = float(2.0 * y_half[-1]) if y_half[-1] > 0 else 0.0
     S_w = float(2.0 * S_half) if S_half > 0.0 else 0.0
@@ -132,5 +142,6 @@ def compute_dynamic_wing_reference_geometry(
         "cz_tip": float(cz_tip),
         "cx_wing": float(np.mean(cx_span)),
         "cz_wing": float(np.mean(cz_span)),
-        "dihedral_deg": float(wing_cfg.get("dihedral", 0.0)) if isinstance(wing_cfg, dict) else 0.0,
+        "dihedral_deg": dihedral_deg,
+        "l_w_z": l_w_z,
     }

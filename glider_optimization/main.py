@@ -36,12 +36,8 @@ def main(argv: Optional[list] = None) -> int:
     cfg = _apply_overrides(cfg, args)
     setup_logging(cfg.io)
     
-    if cfg.run.is_baseline:
-        from glider_optimization.baselineRunner import BaselineRunner as Runner 
-        runner = Runner(cfg)
-    else:
-        from glider_optimization.runner import Runner
-        runner = Runner(cfg)
+    from glider_optimization.runner import Runner
+    runner = Runner(cfg)
     try:
         runner.run()
     except KeyboardInterrupt:
