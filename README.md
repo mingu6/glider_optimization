@@ -22,11 +22,11 @@ The current public code should therefore be read as:
 
 The optimization pipeline is structured as a differentiable nested program:
 
-\[
+$$
 \psi \;\longrightarrow\; \text{Aerodynamics} \;\longrightarrow\; \text{Reduced Model} \;\longrightarrow\; \text{OCP} \;\longrightarrow\; \text{Evaluation},
-\]
+$$
 
-where \(\psi\) denotes the airfoil design parameters.
+where $\psi$ denotes the airfoil design parameters.
 
 In the current implementation, the forward pass is organized as the following block chain:
 
@@ -64,11 +64,11 @@ This yields a smooth, low-dimensional design space suitable for gradient-based o
 
 In 2D mode, the aerodynamic model is purely sectional.
 
-For a fixed airfoil design \(\psi\), aerodynamic coefficients are sampled from NeuralFoil over a prescribed \((\alpha, Re)\) envelope:
+For a fixed airfoil design $\psi$, aerodynamic coefficients are sampled from NeuralFoil over a prescribed $(\alpha, Re)$ envelope:
 
-\[
+$$
 (\psi,\alpha,Re) \mapsto (C_L, C_D, C_M).
-\]
+$$
 
 These samples are then fit with a local bivariate Chebyshev surrogate, which is what the OCP queries inside the dynamics. This is the formulation documented in the accompanying paper and should be regarded as the validated methodological core of the repository.
 
@@ -92,7 +92,7 @@ This preserves the dominant finite-wing mechanisms relevant to co-design:
 
 The 3D branch optimizes two independent Kulfan airfoils: one at the wing root and one at the wing tip.
 
-At each spanwise station \(\eta = y/(b/2)\), the local section is constructed by interpolation between the root and tip airfoils. This allows the optimizer to exploit spanwise variation in:
+At each spanwise station $\eta = y/(b/2)$, the local section is constructed by interpolation between the root and tip airfoils. This allows the optimizer to exploit spanwise variation in:
 
 - camber,
 - thickness,
@@ -114,13 +114,13 @@ This section-coupled formulation is the core aerodynamic choice of the 3D branch
 
 The 3D lifting-line model is **quarter-chord-centered**.
 
-Circulation is carried on the quarter-chord lifting line, and local flow quantities are evaluated consistently on that same line. This choice is deliberate: it keeps the lifting-line geometry, the sectional closure, and the force/moment bookkeeping internally consistent, and is closer in spirit to modern numerical lifting-line formulations than to Weissinger-style \(1/4\)-vortex, \(3/4\)-collocation schemes.
+Circulation is carried on the quarter-chord lifting line, and local flow quantities are evaluated consistently on that same line. This choice is deliberate: it keeps the lifting-line geometry, the sectional closure, and the force/moment bookkeeping internally consistent, and is closer in spirit to modern numerical lifting-line formulations than to Weissinger-style $1/4$-vortex, $3/4$-collocation schemes.
 
 ### LLT fixed-point solve
 
-Given a current spanwise circulation iterate \(\Gamma^{(k)}\), the local effective angle of attack on panel \(i\) is computed as
+Given a current spanwise circulation iterate $\Gamma^{(k)}$, the local effective angle of attack on panel $i$ is computed as
 
-\[
+$$
 \alpha_{\mathrm{eff},i}^{(k)}
 =
 \alpha_{\mathrm{geo},i}
@@ -128,47 +128,47 @@ Given a current spanwise circulation iterate \(\Gamma^{(k)}\), the local effecti
 \alpha_{\mathrm{twist},i}
 -
 \alpha_{\mathrm{ind},i}\!\left(\Gamma^{(k)}\right),
-\]
+$$
 
 where the induced term is obtained from the near-field vortex influence.
 
 The local Reynolds number is then reconstructed from the local speed and local chord,
 
-\[
+$$
 Re_i^{(k)} = \frac{\rho\,U_i^{(k)}\,c_i}{\mu},
-\]
+$$
 
 and the sectional closure gives
 
-\[
+$$
 c_{l,i}^{(k)} = c_l^{2D}\!\left(\alpha_{\mathrm{eff},i}^{(k)}, Re_i^{(k)}, \psi_i\right).
-\]
+$$
 
 The corresponding unrelaxed circulation update is
 
-\[
+$$
 \widetilde{\Gamma}_i^{(k+1)}
 =
 \frac{1}{2}\,U_i^{(k)}\,c_i\,c_{l,i}^{(k)}.
-\]
+$$
 
 A relaxed Picard iteration is then applied:
 
-\[
+$$
 \Gamma_i^{(k+1)}
 =
 (1-\beta)\,\Gamma_i^{(k)}
 +
 \beta\,\widetilde{\Gamma}_i^{(k+1)}.
-\]
+$$
 
 Equivalently, in compact form,
 
-\[
+$$
 \Gamma^{(k+1)}=(1-\beta)\Gamma^{(k)}+\beta\,\mathcal T(\Gamma^{(k)}),
-\]
+$$
 
-where \(\mathcal T\) is the sectional circulation map induced by the current downwash estimate.
+where $\mathcal T$ is the sectional circulation map induced by the current downwash estimate.
 
 The iteration terminates when the circulation residual falls below tolerance or a maximum iteration count is reached.
 
@@ -176,7 +176,7 @@ The iteration terminates when the circulation residual falls below tolerance or 
 
 The model treats **local induced-flow correction** and **induced-drag evaluation** as distinct but complementary parts of the 3D aerodynamic formulation.
 
-- **Near-field induced velocity** is used to correct the local section operating point, because this is the quantity needed to update \(\alpha_{\mathrm{eff}}\), Reynolds number, and sectional closure.
+- **Near-field induced velocity** is used to correct the local section operating point, because this is the quantity needed to update $\alpha_{\mathrm{eff}}$, Reynolds number, and sectional closure.
 - **Induced drag** is evaluated from a far-wake / Trefftz-plane viewpoint, where lift-induced drag is naturally defined at wing level rather than as a purely local section quantity.
 
 This separation avoids conflating viscous profile drag with global lift-induced drag and makes the 3D formulation more physically consistent.
@@ -194,14 +194,14 @@ The 3D branch supports:
 
 For a fixed airfoil design, the sampled aerodynamic coefficients are approximated over the operating envelope by a tensor-product Chebyshev polynomial:
 
-\[
+$$
 C(\alpha, Re)
 \approx
 \sum_{i=0}^{d}\sum_{j=0}^{d}
 \phi_{ij}\,T_i(\bar\alpha)\,T_j(\overline{Re}).
-\]
+$$
 
-This reduced model is fit separately for \(C_L\), \(C_D\), and \(C_M\).
+This reduced model is fit separately for $C_L$, $C_D$, and $C_M$.
 
 The purpose of this step is purely computational: it replaces repeated evaluation of the underlying aerodynamic model with a local differentiable polynomial surrogate that is cheap enough to embed in the inner OCP.
 
@@ -246,21 +246,21 @@ These terms are intended to capture non-circulatory and rapid-circulation effect
 
 ### 2. Lagged effective angle of attack
 
-At sectional level, the intended first approximation is a lagged effective-angle-of-attack state \(\alpha_f\), governed by
+At sectional level, the intended first approximation is a lagged effective-angle-of-attack state $\alpha_f$, governed by
 
-\[
+$$
 \dot{\alpha}_f = \frac{\alpha-\alpha_f}{\tau_\alpha}.
-\]
+$$
 
-The static sectional surrogate is then queried at \(\alpha_f\) rather than at the instantaneous \(\alpha\).
+The static sectional surrogate is then queried at $\alpha_f$ rather than at the instantaneous $\alpha$.
 
 This is a reduced first-order memory model inspired by low-order dynamic-stall formulations, in which the effective angle of attack lags the geometric angle of attack. A convective scaling of the form
 
-\[
+$$
 \tau_\alpha = k_\alpha \frac{c}{2V}
-\]
+$$
 
-is the intended starting point, where \(c\) is a reference chord, \(V\) is the local section speed, and \(k_\alpha\) is a dimensionless tuning constant.
+is the intended starting point, where $c$ is a reference chord, $V$ is the local section speed, and $k_\alpha$ is a dimensionless tuning constant.
 
 ### Scope of the unsteady model
 
