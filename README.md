@@ -121,13 +121,7 @@ Circulation is carried on the quarter-chord lifting line, and local flow quantit
 Given a current spanwise circulation iterate $\Gamma^{(k)}$, the local effective angle of attack on panel $i$ is computed as
 
 $$
-\alpha_{\mathrm{eff},i}^{(k)}
-=
-\alpha_{\mathrm{geo},i}
-+
-\alpha_{\mathrm{twist},i}
--
-\alpha_{\mathrm{ind},i}\!\left(\Gamma^{(k)}\right),
+\alpha_{\mathrm{eff},i}^{(k)} = \alpha_{\mathrm{geo},i} + \alpha_{\mathrm{twist},i} - \alpha_{\mathrm{ind},i}\left(\Gamma^{(k)}\right),
 $$
 
 where the induced term is obtained from the near-field vortex influence.
@@ -141,34 +135,28 @@ $$
 and the sectional closure gives
 
 $$
-c_{l,i}^{(k)} = c_l^{2D}\!\left(\alpha_{\mathrm{eff},i}^{(k)}, Re_i^{(k)}, \psi_i\right).
+c_{l,i}^{(k)} = c_l^{2D}\left(\alpha_{\mathrm{eff},i}^{(k)}, Re_i^{(k)}, \psi_i\right).
 $$
 
 The corresponding unrelaxed circulation update is
 
 $$
-\widetilde{\Gamma}_i^{(k+1)}
-=
-\frac{1}{2}\,U_i^{(k)}\,c_i\,c_{l,i}^{(k)}.
+\widetilde{\Gamma}_i^{(k+1)} = \frac{1}{2} U_i^{(k)} c_i c_{l,i}^{(k)}.
 $$
 
 A relaxed Picard iteration is then applied:
 
 $$
-\Gamma_i^{(k+1)}
-=
-(1-\beta)\,\Gamma_i^{(k)}
-+
-\beta\,\widetilde{\Gamma}_i^{(k+1)}.
+\Gamma_i^{(k+1)} = (1-\beta)\,\Gamma_i^{(k)} + \beta\,\widetilde{\Gamma}_i^{(k+1)}.
 $$
 
 Equivalently, in compact form,
 
 $$
-\Gamma^{(k+1)}=(1-\beta)\Gamma^{(k)}+\beta\,\mathcal T(\Gamma^{(k)}),
+\Gamma^{(k+1)} = (1-\beta)\Gamma^{(k)} + \beta\,\mathcal{T}(\Gamma^{(k)}),
 $$
 
-where $\mathcal T$ is the sectional circulation map induced by the current downwash estimate.
+where $\mathcal{T}$ is the sectional circulation map induced by the current downwash estimate.
 
 The iteration terminates when the circulation residual falls below tolerance or a maximum iteration count is reached.
 
