@@ -1,0 +1,104 @@
+run:
+  seed: 42
+  device: cpu
+  max_outer_iters: 300
+  cost_target: 1.0
+  cost_target_min_iters: 1
+  cost_residual_tol: null
+  cost_residual_patience: 5
+  cost_residual_min_iters: 1
+
+evaluation:
+  mode: Perching  # switch to Perching / SoftLanding 
+
+airfoil:
+  lr: 0.003
+  upper_initial_weights: [0.18109497, 0.21268419, 0.28098503, 0.24864887, 0.2402814, 0.27262843, 0.25776474, 0.27817638]
+  lower_initial_weights: [-0.16965146, -0.09364138, -0.06345896, -0.0067966, -0.0902447,  0.02081845, -0.03575216, -0.00223623]
+  leading_edge_weight: 0.10647
+  TE_thickness: 0.00257
+  upper_initial_weights_tip: [0.18109497, 0.21268419, 0.28098503, 0.24864887, 0.2402814, 0.27262843, 0.25776474, 0.27817638]
+  lower_initial_weights_tip: [-0.16965146, -0.09364138, -0.06345896, -0.0067966, -0.0902447,  0.02081845, -0.03575216, -0.00223623]
+  leading_edge_weight_tip: 0.10647
+  TE_thickness_tip: 0.00257
+
+
+
+
+io:
+  gif_fps: 5
+  log_every: 1
+  static_plot_every: 10
+  airfoil_gif_every: 1
+  checkpoint_dir: ./runs/remove_this
+  wandb:
+    enabled: false
+    project: "glider-optimization"
+    tags: ["development"]
+    notes: "Testing wandb"
+
+neuralFoilSampling:
+  use_3d_llt: true
+  AoA_min: -30
+  AoA_max: 30
+  Re_min: 100
+  Re_max: 100000
+  n_samples: 1024
+  neuralFoil_size: xxxlarge
+  rho: 5.0
+  min_confidence: 0.6
+  min_avg_Cl_Cd: 0.0 #2.5
+  # LLT convergence settings
+  llt_n_iter: 20
+  llt_tol: 1e-5
+  llt_max_iter: 30  # Increase to handle difficult cases at extreme AoA
+  llt_beta: 0.4
+
+
+reducedModel:
+  chebyshev_degree: 25 
+  l2_reg: 0
+  #l2_reg: 1e-6
+
+ocp:
+
+  initial_states_perching: [[-10.0, 1 , 0. , 0., 2., 0. , 0., 0.01], [-10.0, 1 , 0. , 0., 2.25, 0. , 0., 0.01], [-8.5, 1 , 0. , 0., 1.5, 0. , 0., 0.01], [-8.5, 1 , 0. , 0., 1.75, 0. , 0., 0.01]]
+
+
+plane:
+  flow:
+    rho: 1.225
+    mu: 1.789e-5
+
+  wing:
+    y_half:   [0,0.105,0.21,0.315,0.3675,0.39375,0.42]
+    c_half:   [0.1875,0.16875,0.15,0.13125,0.121875,0.117187,0.1125]
+    xle_half: [0,0.01875,0.0375,0.05625,0.065625,0.0703125,0.075]
+    twist_half: [0, 0, 0, 0, 0, 0, 0]
+    dihedral: 0.0
+    airfoil_root: "NACA4412"
+    airfoil_tip: "NACA4412"
+
+    dynamic_centroid: true  # set true to use airfoil-dependent wing reference geometry
+    use_quarter_chord_ref: true
+
+  elevator:
+    y_half:   [0,0.025,0.05,0.075,0.1,0.125,0.15]
+    c_half:   [0.06,0.06,0.06,0.06,0.06,0.06,0.06]
+    xle_half: [0,0,0,0,0,0,0]
+    twist_half: [0, 0, 0, 0, 0, 0, 0]
+    dihedral: 0.0
+    airfoil: "NACA0012"
+    use_quarter_chord_ref: true
+
+
+  # dynamics-only constants (keep explicit)
+  dyn:
+    mass: 0.1
+    S_w: 0.158
+    S_e: 0.017
+    l_w_i: -0.005
+    l_w_f: -0.015
+    l: 0.26
+    l_3d: 0.344 # Distance from wing leading edge to elevator leading edge
+    l_e: 0.02

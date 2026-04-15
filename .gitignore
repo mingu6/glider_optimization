@@ -4,5 +4,4 @@ wandb/*
 *.gif
 *.pyc
 *.log
-*.yaml
 *.egg-info
