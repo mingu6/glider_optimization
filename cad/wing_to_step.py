@@ -281,10 +281,9 @@ def main():
         solid = cq.Solid.makeLoft(wires, ruled=ruled)
         print("Half-span solid created.")
     else:
-        # Negative half: same sections in reverse, with y and z_dih negated.
         neg_wires = [
             _make_wire(s["foil"], s["chord"], s["xoff"],
-                       -s["y"], -s["z_dih"], s["twist"], args.n_pts)
+                       -s["y"], s["z_dih"], s["twist"], args.n_pts)
             for s in reversed(sections)
         ]
         pos_wires = [
