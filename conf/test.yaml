@@ -39,7 +39,7 @@ io:
 
 neuralFoilSampling:
   use_3d_llt: true
-  unsteady: false
+  unsteady: true
   AoA_min: -30
   AoA_max: 30
   Re_min: 100

@@ -1,7 +1,7 @@
 from casadi import (
     SX, Function,
     sin, cos, tanh, atan2, sqrt,
-    dot, gradient,
+    dot, gradient, substitute,
     vertcat, vcat, diag,
     pi, fmax, fmin
 )
@@ -97,28 +97,34 @@ class GliderPerching :
         c_half = wing_cfg.get("c_half", None) if isinstance(wing_cfg, dict) else None
         xle_half = wing_cfg.get("xle_half", None) if isinstance(wing_cfg, dict) else None
 
-        if isinstance(y_half, list) and isinstance(c_half, list) and len(y_half) >= 2 and len(y_half) == len(c_half):
+        if isinstance(y_half, list) and isinstance(c_half, list) and len(y_half) >= 2 and len(c_half) >= 2:
             y = np.asarray(y_half, dtype=float)
-            c = np.asarray(c_half, dtype=float)
+            c_raw = np.asarray(c_half, dtype=float)
+            # c_half may supply only root/tip (2 values); interpolate onto y_half grid if needed
+            if len(c_raw) != len(y):
+                y_c = np.linspace(y[0], y[-1], len(c_raw))
+                c = np.interp(y, y_c, c_raw)
+            else:
+                c = c_raw
             if np.all(np.diff(y) >= 0):
-                S_half = float(np.trapz(c, y))
+                S_half = float(np.trapezoid(c, y))
                 span = float(2.0 * y[-1]) if y[-1] > 0 else 0.0
                 if S_half > 0 and span > 0:
                     S_w = float(2.0 * S_half)
                     chord = float(S_w / span)
 
-                    den_cg = float(np.trapz(c, y))
+                    den_cg = float(np.trapezoid(c, y))
                     if den_cg > 0:
                         # chord-weighted mean z-height for dihedral inertia arm
                         z_vals = y * np.tan(np.deg2rad(dihedral_deg))
-                        l_w_z = float(np.trapz(c * z_vals, y) / den_cg)
+                        l_w_z = float(np.trapezoid(c * z_vals, y) / den_cg)
 
                     if isinstance(xle_half, list) and len(xle_half) == len(y_half):
                         xle = np.asarray(xle_half, dtype=float)
-                        den = float(np.trapz(c, y))
+                        den = float(np.trapezoid(c, y))
                         if den > 0:
-                            l_w_ac = float(np.trapz(c * (xle + 0.25 * c), y) / den)
-                            l_w_cg = float(np.trapz(c * (xle + 0.50 * c), y) / den)
+                            l_w_ac = float(np.trapezoid(c * (xle + 0.25 * c), y) / den)
+                            l_w_cg = float(np.trapezoid(c * (xle + 0.50 * c), y) / den)
 
         dynamic_centroid_enabled = bool(wing_cfg.get("dynamic_centroid", False)) if isinstance(wing_cfg, dict) else False
         if dynamic_centroid_enabled and isinstance(self.wing_reference_geometry, dict):
@@ -200,11 +206,34 @@ class GliderPerching :
         CL_w = w*dot(X, phi_CL) + (1-w)*self.C_L(alpha_w)
         CD_w = w*dot(X, phi_CD) + (1-w)*self.C_D(alpha_w)
         CM_w = w*dot(X, phi_CM) + (1-w)*self.C_M(alpha_w)
-        
+
+        # Sugar-Gabor (2018) Eq. 13 — quasi-unsteady corrections (Terms 2 & 3)
+        # Term 2: ½ρ·c·S·Clα·θ̇ in lift direction  (∂Γ/∂t ≈ ½v_w·c·Clα·θ̇, dS=c·dy)
+        # Term 3: ½ρ·c·S·CL·θ̇  in drag direction  (dn̂/dt = -θ̇·ĉ)
+        # Both terms are O(v_w⁰): no singularity at low speed.
+        # Compatible with use_3d_llt: true or false — only depends on CL_w and geometry.
+        if self.config.neuralFoilSampling.unsteady:
+            # Exact dCL/dalpha: introduce a fresh pure symbol for alpha so that CasADi can
+            # differentiate w.r.t. it directly.  Re_scaled_clamped is kept as-is (treated as
+            # a constant in this derivative, which is physically correct).
+            # After differentiation, substitute the actual alpha_w derived expression back.
+            alpha_sym                = SX.sym('alpha_sym')
+            alpha_scaled_sym         = self.scale(alpha_sym, a0_min, a0_max)
+            alpha_scaled_clamped_sym = fmax(-1.0, fmin(1.0, alpha_scaled_sym))
+            w_sym  = self.smooth_gate(alpha_sym, a0_min, a0_max, sharpness)
+            X_sym  = self.cheb_basis_2d(alpha_scaled_clamped_sym, Re_scaled_clamped, chebyshev_deg)
+            CL_sym = w_sym * dot(X_sym, phi_CL) + (1 - w_sym) * self.C_L(alpha_sym)
+            dCL_dalpha = substitute(gradient(CL_sym, alpha_sym), alpha_sym, alpha_w)
+            F_w2 = 0.5 * rho * chord * S_w * dCL_dalpha * thetadot * vertcat(-z_wdot,  x_wdot)
+            F_w3 = 0.5 * rho * chord * S_w * CL_w         * thetadot * vertcat(-x_wdot, -z_wdot)
+        else:
+            F_w2 = SX.zeros(2, 1)
+            F_w3 = SX.zeros(2, 1)
+
         # force vectors for aerodynamic surfaces (lift, drag, gravity)
         F_Lw = CL_w * vertcat(-z_wdot, x_wdot)  # lift force vector (proportional to)
         F_Dw = CD_w * vertcat(-x_wdot, -z_wdot) # drag force vector (proportional to)
-        F_w = 0.5 * rho * v_w * S_w * (F_Lw + F_Dw)
+        F_w = 0.5 * rho * v_w * S_w * (F_Lw + F_Dw) + F_w2 + F_w3
         M_w = 0.5 * rho * v_w**2 * S_w * chord * CM_w
 
         alpha_e = theta + phi - atan2(z_edot, x_edot)

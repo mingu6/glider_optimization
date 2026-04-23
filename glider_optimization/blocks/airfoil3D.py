@@ -291,10 +291,10 @@ class Airfoil3D(Block):
         eta = np.clip(y_half / half_span, 0.0, 1.0)
         cx_span = (1.0 - eta) * cx_root + eta * cx_tip
         cz_span = (1.0 - eta) * cz_root + eta * cz_tip
-        den = float(np.trapz(c_half, y_half))
+        den = float(np.trapezoid(c_half, y_half))
         if den > 0:
-            cx_wing = float(np.trapz(c_half * cx_span, y_half) / den)
-            cz_wing = float(np.trapz(c_half * cz_span, y_half) / den)
+            cx_wing = float(np.trapezoid(c_half * cx_span, y_half) / den)
+            cz_wing = float(np.trapezoid(c_half * cz_span, y_half) / den)
         else:
             cx_wing, cz_wing = float(np.mean(cx_span)), float(np.mean(cz_span))
 
