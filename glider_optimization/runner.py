@@ -111,20 +111,9 @@ class Runner:
                 self.logger.info("=" * 100)
                 self.logger.info(f"Iteration {iteration}/{num_iterations}")
             
-            fwd_data = self._forward_pass(iteration)
-            self._maybe_save_best_trajectory_snapshots(iteration, fwd_data)
-
-            if self._should_stop_on_cost_target(iteration, fwd_data):
-                self.logger.info(f"Cost target reached at iteration {iteration}. Stopping early.")
-                break
-
+            self._forward_pass(iteration)
             self._backward_pass(iteration)
-
-            if self._should_stop_on_cost_residual(iteration, fwd_data):
-                self.logger.info(f"Cost residual criterion reached at iteration {iteration}. Stopping early.")
-                break
         
-        self._plot_objective_if_needed()
         self.logger.info("Runner finished")
         if self.wandb_enabled:
             wandb.finish()
@@ -150,95 +139,5 @@ class Runner:
         
         self.logger.debug("Outer loop backward pass completed")
 
-    def _should_stop_on_cost_residual(self, iteration: int, fwd_data: dict) -> bool:
-        tol = getattr(self.config.run, "cost_residual_tol", None)
-        if tol is None:
-            return False
-
-        if "cost" not in fwd_data:
-            return False
-
-        current_cost = float(fwd_data["cost"])
-        if self._prev_cost is None:
-            self._prev_cost = current_cost
-            return False
-
-        residual = abs(current_cost - self._prev_cost)
-        self._prev_cost = current_cost
-
-        min_iters = max(0, int(getattr(self.config.run, "cost_residual_min_iters", 0)))
-        patience = max(1, int(getattr(self.config.run, "cost_residual_patience", 1)))
-
-        if residual < float(tol) and iteration >= min_iters:
-            self._cost_residual_counter += 1
-        else:
-            self._cost_residual_counter = 0
-
-        if iteration % self.config.io.log_every == 0:
-            self.logger.info(
-                f"Cost residual={residual:.6e}, tol={float(tol):.6e}, "
-                f"patience_counter={self._cost_residual_counter}/{patience}"
-            )
-
-        return self._cost_residual_counter >= patience
-
-    def _should_stop_on_cost_target(self, iteration: int, fwd_data: dict) -> bool:
-        target = getattr(self.config.run, "cost_target", None)
-        if target is None:
-            return False
-        if "cost" not in fwd_data:
-            return False
-
-        min_iters = max(0, int(getattr(self.config.run, "cost_target_min_iters", 0)))
-        if iteration < min_iters:
-            return False
-
-        current_cost = float(fwd_data["cost"])
-        if iteration % self.config.io.log_every == 0:
-            self.logger.info(f"Cost target check: cost={current_cost:.6f}, target={float(target):.6f}")
-
-        return current_cost <= float(target)
-
-    def _plot_objective_if_needed(self):
-        eval_block = self.blocks.get("Evaluation")
-        if eval_block is not None and not self.wandb_enabled:
-            try:
-                eval_block.plot_objective()
-            except Exception as exc:
-                self.logger.warning(f"Failed to save objective plots: {exc}")
-
-    def _maybe_save_best_trajectory_snapshots(self, iteration: int, fwd_data: dict) -> None:
-        ocp_block = self.blocks.get("OCP")
-        if ocp_block is None:
-            return
-        if not hasattr(ocp_block, "save_best_snapshot"):
-            return
-
-        current_cost = fwd_data.get("cost")
-        if current_cost is not None:
-            current_cost = float(current_cost)
-            if current_cost < self._best_cost:
-                self._best_cost = current_cost
-                self._best_cost_iter = iteration
-                ocp_block.save_best_snapshot(
-                    metric_name="Cost",
-                    metric_value=self._best_cost,
-                    best_iteration=self._best_cost_iter,
-                    filename_suffix="best_cost",
-                )
-
-        current_obj = fwd_data.get("total_obj")
-        if current_obj is not None:
-            current_obj = float(current_obj)
-            if current_obj < self._best_objective:
-                self._best_objective = current_obj
-                self._best_objective_iter = iteration
-                ocp_block.save_best_snapshot(
-                    metric_name="Objective",
-                    metric_value=self._best_objective,
-                    best_iteration=self._best_objective_iter,
-                    filename_suffix="best_objective",
-                )
-
     def checkpoint_on_interrupt(self):
-        self._plot_objective_if_needed()
+        pass

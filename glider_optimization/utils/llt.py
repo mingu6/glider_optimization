@@ -522,10 +522,6 @@ class LLTImplicitFn(torch.autograd.Function):
                 if rel_diff < const.tol:
                     Gamma = Gamma_new
                     converged = True
-                    if iter_idx < n_iter:
-                        print(f"🔍 LLT converged at iteration {iter_idx+1}/{n_iter}, rel_diff={rel_diff:.2e}")
-                    else:
-                        print(f"🔍 LLT converged at iteration {iter_idx+1}/{max_iter} (adaptive), rel_diff={rel_diff:.2e}")
                     break
                 Gamma = Gamma_new
             
@@ -539,11 +535,6 @@ class LLTImplicitFn(torch.autograd.Function):
                 # Compute recent gradient (last 5 iterations)
                 recent_gradient = abs(residual_history[-1] - residual_history[-5]) / 5
                 ctx.residual_gradient = recent_gradient
-                
-                # Also compute mid-range gradient (around iteration 15-20)
-                if len(residual_history) >= 20:
-                    mid_gradient = abs(residual_history[19] - residual_history[14]) / 5
-                    print(f"🔍 Residual gradients: recent={recent_gradient:.2e}, mid (iter 15-20)={mid_gradient:.2e}")
             else:
                 ctx.residual_gradient = float('inf')
             
