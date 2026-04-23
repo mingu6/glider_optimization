@@ -409,7 +409,7 @@ class Airfoil3D(Block):
 
         mesh = trimesh.Trimesh(vertices=vertices, faces=np.array(faces), process=False)
         scene = mesh.scene()
-        png = scene.save_image(resolution=(800, 400), visible=True)
+        png = scene.save_image(resolution=(800, 400), visible=False)
 
         return imageio.imread(png)[..., :3]
 
