@@ -277,8 +277,15 @@ class Airfoil3D(Block):
         # Chord-weighted wing centroid (linear taper: weight root by ~2/3, tip by ~1/3)
         plane_cfg = getattr(self.config, "plane", {}) or {}
         wing_cfg = plane_cfg.get("wing", {}) if isinstance(plane_cfg, dict) else {}
-        c_half = np.array(wing_cfg.get("c_half", [1.0, 1.0]), dtype=float) if isinstance(wing_cfg, dict) else np.array([1.0, 1.0])
+        c_half_raw = np.array(wing_cfg.get("c_half", [1.0, 1.0]), dtype=float) if isinstance(wing_cfg, dict) else np.array([1.0, 1.0])
         y_half = np.array(wing_cfg.get("y_half", [0.0, 1.0]), dtype=float) if isinstance(wing_cfg, dict) else np.array([0.0, 1.0])
+        # c_half may have fewer entries than y_half (e.g. [root, tip] vs 7 span stations)
+        # interpolate onto y_half grid so shapes match for trapz
+        if len(c_half_raw) != len(y_half):
+            y_c = np.linspace(y_half[0], y_half[-1], len(c_half_raw))
+            c_half = np.interp(y_half, y_c, c_half_raw)
+        else:
+            c_half = c_half_raw
         half_span = max(float(y_half[-1]), 1e-12)
         eta = np.clip(y_half / half_span, 0.0, 1.0)
         cx_span = (1.0 - eta) * cx_root + eta * cx_tip

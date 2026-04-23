@@ -72,10 +72,10 @@ plane:
     mu: 1.789e-5
 
   wing:
-    y_half:   [0,0.105,0.21,0.315,0.3675,0.39375,0.42]
+    y_half:   [0,0.42]
     c_half:   [0.15,0.09]
-    xle_half: [0,0.01875,0.0375,0.05625,0.065625,0.0703125,0.075]
-    twist_half: [0, 0, 0, 0, 0, 0, 0]
+    xle_half: [0,0.075]
+    twist_half: [0, 0]
     dihedral: 0.0
     airfoil_root: "NACA4412"
     airfoil_tip: "NACA4412"
