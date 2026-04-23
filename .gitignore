@@ -6,3 +6,5 @@ wandb/*
 *.log
 *.yaml
 *.egg-info
+.DS_Store
+._config.py
