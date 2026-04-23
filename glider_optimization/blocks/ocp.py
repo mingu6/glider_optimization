@@ -420,9 +420,9 @@ class OCP(Block):
             y  = np.asarray(y_half, dtype=float)
             c  = np.asarray(c_half, dtype=float)
             xle = np.asarray(xle_half, dtype=float)
-            den = float(np.trapz(c, y))
+            den = float(np.trapezoid(c, y))
             if den > 0:
-                l_w_ac = float(np.trapz(c * (xle + 0.25 * c), y) / den)
+                l_w_ac = float(np.trapezoid(c * (xle + 0.25 * c), y) / den)
 
         # Build CasADi debug_f once for all trajectories.
         # debug_f(X, U, auxvar) -> [alpha_w, v_w, CL_w, CD_w, CM_w, F_w[2], F_e[2], ...]

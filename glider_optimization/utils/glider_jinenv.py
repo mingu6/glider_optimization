@@ -101,24 +101,24 @@ class GliderPerching :
             y = np.asarray(y_half, dtype=float)
             c = np.asarray(c_half, dtype=float)
             if np.all(np.diff(y) >= 0):
-                S_half = float(np.trapz(c, y))
+                S_half = float(np.trapezoid(c, y))
                 span = float(2.0 * y[-1]) if y[-1] > 0 else 0.0
                 if S_half > 0 and span > 0:
                     S_w = float(2.0 * S_half)
                     chord = float(S_w / span)
 
-                    den_cg = float(np.trapz(c, y))
+                    den_cg = float(np.trapezoid(c, y))
                     if den_cg > 0:
                         # chord-weighted mean z-height for dihedral inertia arm
                         z_vals = y * np.tan(np.deg2rad(dihedral_deg))
-                        l_w_z = float(np.trapz(c * z_vals, y) / den_cg)
+                        l_w_z = float(np.trapezoid(c * z_vals, y) / den_cg)
 
                     if isinstance(xle_half, list) and len(xle_half) == len(y_half):
                         xle = np.asarray(xle_half, dtype=float)
-                        den = float(np.trapz(c, y))
+                        den = float(np.trapezoid(c, y))
                         if den > 0:
-                            l_w_ac = float(np.trapz(c * (xle + 0.25 * c), y) / den)
-                            l_w_cg = float(np.trapz(c * (xle + 0.50 * c), y) / den)
+                            l_w_ac = float(np.trapezoid(c * (xle + 0.25 * c), y) / den)
+                            l_w_cg = float(np.trapezoid(c * (xle + 0.50 * c), y) / den)
 
         dynamic_centroid_enabled = bool(wing_cfg.get("dynamic_centroid", False)) if isinstance(wing_cfg, dict) else False
         if dynamic_centroid_enabled and isinstance(self.wing_reference_geometry, dict):

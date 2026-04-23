@@ -114,18 +114,18 @@ def compute_dynamic_wing_reference_geometry(
     # Convert centroid from x/c to absolute x along the body axis.
     x_centroid_span = xle_half + c_half * cx_span
 
-    den = float(np.trapz(c_half, y_half))
+    den = float(np.trapezoid(c_half, y_half))
     if den <= 0.0:
         l_w_m = float(np.mean(x_centroid_span))
     else:
-        l_w_m = float(np.trapz(c_half * x_centroid_span, y_half) / den)
+        l_w_m = float(np.trapezoid(c_half * x_centroid_span, y_half) / den)
 
     # Chord-weighted mean z-height of the wing centroid (dihedral arm for inertia)
     dihedral_deg = float(wing_cfg.get("dihedral", 0.0)) if isinstance(wing_cfg, dict) else 0.0
     z_half = y_half * np.tan(np.deg2rad(dihedral_deg))
-    l_w_z = float(np.trapz(c_half * z_half, y_half) / den) if den > 0.0 else 0.0
+    l_w_z = float(np.trapezoid(c_half * z_half, y_half) / den) if den > 0.0 else 0.0
 
-    S_half = float(np.trapz(c_half, y_half))
+    S_half = float(np.trapezoid(c_half, y_half))
     span = float(2.0 * y_half[-1]) if y_half[-1] > 0 else 0.0
     S_w = float(2.0 * S_half) if S_half > 0.0 else 0.0
     chord_ref = float(S_w / span) if span > 0.0 else float(np.mean(c_half))

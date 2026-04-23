@@ -51,7 +51,7 @@ neuralFoilSampling:
   min_avg_Cl_Cd: 0.25 #2.5
   # LLT convergence settings
   llt_n_iter: 20
-  llt_tol: 1e-5
+  llt_tol: 1e-2
   llt_max_iter: 30  # Increase to handle difficult cases at extreme AoA
   llt_beta: 0.4
 
