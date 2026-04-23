@@ -394,15 +394,16 @@ class Airfoil3D(Block):
             sections.append(np.stack([x, y, z], axis=1))
 
         sections = np.array(sections)
+        n_pts_actual = sections.shape[1]
         vertices = sections.reshape(-1, 3)
 
         faces = []
         for i in range(n_span - 1):
-            for j in range(n_pts - 1):
-                v0 = i * n_pts + j
-                v1 = (i + 1) * n_pts + j
-                v2 = (i + 1) * n_pts + (j + 1)
-                v3 = i * n_pts + (j + 1)
+            for j in range(n_pts_actual - 1):
+                v0 = i * n_pts_actual + j
+                v1 = (i + 1) * n_pts_actual + j
+                v2 = (i + 1) * n_pts_actual + (j + 1)
+                v3 = i * n_pts_actual + (j + 1)
                 faces.append([v0, v1, v2])
                 faces.append([v0, v2, v3])
 
@@ -410,7 +411,7 @@ class Airfoil3D(Block):
         scene = mesh.scene()
         png = scene.save_image(resolution=(800, 400), visible=True)
 
-        return imageio.imread(png)
+        return imageio.imread(png)[..., :3]
 
 
     def save_gif(self, filename="airfoil_evolution.gif", fps=1):        

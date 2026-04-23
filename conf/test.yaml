@@ -1,7 +1,7 @@
 run:
   seed: 42
   device: cpu
-  max_outer_iters: 300
+  max_outer_iters: 3
   cost_target: 1.0
   cost_target_min_iters: 1
   cost_residual_tol: null
@@ -32,7 +32,7 @@ io:
   airfoil_gif_every: 1
   checkpoint_dir: ./runs/perching3d
   wandb:
-    enabled: true
+    enabled: false
     project: "glider-optimization"
     tags: ["3d"]
     notes: "3D perching"
