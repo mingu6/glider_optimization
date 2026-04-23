@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch
 import torch.optim.lr_scheduler as lr_scheduler
 import wandb
+import trimesh
 import logging
 from ..utils.spanwise_geometry import compute_dynamic_wing_reference_geometry, _section_centroid_from_kulfan
 from matplotlib.lines import Line2D
@@ -329,13 +330,87 @@ class Airfoil3D(Block):
         fig.canvas.draw()
         buf, (w, h) = fig.canvas.print_to_buffer()
         frame = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)[..., :3]
-        
+
+        frame_2d = frame
+        frame_3d = self.plot_3d()
+
+        h = max(frame_2d.shape[0], frame_3d.shape[0])
+
+        def pad(img, h):
+            if img.shape[0] == h:
+                return img
+            pad_h = h - img.shape[0]
+            return np.pad(img, ((0, pad_h), (0, 0), (0, 0)), mode='constant')
+
+        frame_2d = pad(frame_2d, h)
+        frame_3d = pad(frame_3d, h)
+
+        combined = np.concatenate([frame_2d, frame_3d], axis=1)
+
         if self.config.io.wandb.enabled:
-            wandb.log({"airfoil/shape": wandb.Image(frame, caption=f"Airfoil Iter {self._iter}")}, step=self._iter)
+            wandb.log({"airfoil/shape": wandb.Image(combined, caption=f"Iter {self._iter}")}, step=self._iter)
         else:
-            self.frames.append(frame)
+            self.frames.append(combined)
         
         plt.close(fig)
+
+    def plot_3d(self):
+        airfoilConfig = self.config.airfoil
+
+        n_span = 25
+        n_pts = 120
+
+        span = np.linspace(0, 1, n_span)
+        sections = []
+
+        for eta in span:
+            upper = (1 - eta) * self.upper_params.detach().numpy() + eta * self.upper_params_tip.detach().numpy()
+            lower = (1 - eta) * self.lower_params.detach().numpy() + eta * self.lower_params_tip.detach().numpy()
+            le = (1 - eta) * self.leading_edge_param.item() + eta * self.leading_edge_param_tip.item()
+            te = (1 - eta) * self.TE_thickness_param.item() + eta * self.TE_thickness_param_tip.item()
+
+            af = asb.KulfanAirfoil(
+                lower_weights=lower,
+                upper_weights=upper,
+                leading_edge_weight=le,
+                TE_thickness=te,
+                N1=airfoilConfig.N1,
+                N2=airfoilConfig.N2,
+            )
+
+            af = af.repanel(n_points_per_side=n_pts // 2)
+
+            x = np.array(af.x())
+            z = np.array(af.y())
+
+            chord = 1.0 - 0.3 * eta
+            sweep = 0.2
+            dihedral = 0.1
+
+            x = x * chord + sweep * eta
+            z = z * chord + dihedral * eta
+            y = np.ones_like(x) * eta
+
+            sections.append(np.stack([x, y, z], axis=1))
+
+        sections = np.array(sections)
+        vertices = sections.reshape(-1, 3)
+
+        faces = []
+        for i in range(n_span - 1):
+            for j in range(n_pts - 1):
+                v0 = i * n_pts + j
+                v1 = (i + 1) * n_pts + j
+                v2 = (i + 1) * n_pts + (j + 1)
+                v3 = i * n_pts + (j + 1)
+                faces.append([v0, v1, v2])
+                faces.append([v0, v2, v3])
+
+        mesh = trimesh.Trimesh(vertices=vertices, faces=np.array(faces), process=False)
+        scene = mesh.scene()
+        png = scene.save_image(resolution=(800, 400), visible=True)
+
+        return imageio.imread(png)
 
 
     def save_gif(self, filename="airfoil_evolution.gif", fps=1):        
