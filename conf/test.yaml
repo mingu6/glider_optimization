@@ -30,12 +30,12 @@ io:
   log_every: 1
   static_plot_every: 10
   airfoil_gif_every: 1
-  checkpoint_dir: ./runs/remove_this
+  checkpoint_dir: ./runs/perching3d
   wandb:
-    enabled: false
+    enabled: true
     project: "glider-optimization"
-    tags: ["development"]
-    notes: "Testing wandb"
+    tags: ["3d"]
+    notes: "3D perching"
 
 neuralFoilSampling:
   use_3d_llt: true

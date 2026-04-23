@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glider-optimization"
-version = "0.1.0"
+version = "1.0.0"
 description = "Gradient-based nested co-design of aerodynamic shape and control for winged robots using NeuralFoil and lifting-line coupling."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,6 +22,7 @@ dependencies = [
   "casadi>=3.6",
   "plotly>=5.18",
   "pandas>=2.0",
+  "trimesh"
 ]
 
 [project.scripts]
