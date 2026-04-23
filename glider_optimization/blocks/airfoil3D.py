@@ -110,10 +110,10 @@ class Airfoil3D(Block):
         self.optimizer.step()
         self._step_scheduler()
         self._enforce_constraints()
-            gif_every = max(1, int(getattr(self.config.io, "airfoil_gif_every", self.config.io.log_every)))
-            is_final_iter = self._iter == self.config.run.max_outer_iters - 1
-            if self._iter == 0 or ((self._iter + 1) % gif_every == 0) or is_final_iter:
-                self.save_gif(fps=self.config.io.gif_fps)
+        gif_every = max(1, int(getattr(self.config.io, "airfoil_gif_every", self.config.io.log_every)))
+        is_final_iter = self._iter == self.config.run.max_outer_iters - 1
+        if self._iter == 0 or ((self._iter + 1) % gif_every == 0) or is_final_iter:
+            self.save_gif(fps=self.config.io.gif_fps)
         
         return {}
     
