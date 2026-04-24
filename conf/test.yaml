@@ -1,7 +1,7 @@
 run:
   seed: 42
   device: cpu
-  max_outer_iters: 3
+  max_outer_iters: 300
   cost_target: 1.0
   cost_target_min_iters: 1
   cost_residual_tol: null
@@ -32,26 +32,26 @@ io:
   airfoil_gif_every: 1
   checkpoint_dir: ./runs/perching3d
   wandb:
-    enabled: false
+    enabled: true
     project: "glider-optimization"
     tags: ["3d"]
     notes: "3D perching"
 
 neuralFoilSampling:
   use_3d_llt: true
-  unsteady: true
+  unsteady: false
   AoA_min: -30
   AoA_max: 30
   Re_min: 100
   Re_max: 100000
   n_samples: 1024
   neuralFoil_size: xxxlarge
-  rho: 5.0
+  rho: 15.0
   min_confidence: 0.6
-  min_avg_Cl_Cd: 0.25 #2.5
+  min_avg_Cl_Cd: 1.0
   # LLT convergence settings
   llt_n_iter: 20
-  llt_tol: 1e-2
+  llt_tol: 1e-3
   llt_max_iter: 30  # Increase to handle difficult cases at extreme AoA
   llt_beta: 0.4
 
