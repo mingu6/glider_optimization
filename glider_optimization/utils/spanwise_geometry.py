@@ -6,6 +6,10 @@ import numpy as np
 import aerosandbox as asb
 import torch
 
+# Single source of truth for the spanwise discretization used across the 3D
+# pipeline (airfoil interpolation, LLT panel geometry, dynamics reference chord).
+DEFAULT_N_SPAN_STATIONS = 7
+
 
 def _endpoints(values: Any, fallback_start: float, fallback_end: float) -> tuple[float, float]:
     if isinstance(values, list) and len(values) >= 2:
@@ -13,7 +17,7 @@ def _endpoints(values: Any, fallback_start: float, fallback_end: float) -> tuple
     return float(fallback_start), float(fallback_end)
 
 
-def build_half_wing_stations_from_cfg(wing_cfg: Dict[str, Any], n_span_stations: int = 7) -> Dict[str, np.ndarray]:
+def build_half_wing_stations_from_cfg(wing_cfg: Dict[str, Any], n_span_stations: int = DEFAULT_N_SPAN_STATIONS) -> Dict[str, np.ndarray]:
     """
     Build half-wing stations using the same endpoint + linspace rule used by the 3D LLT block.
     """
@@ -87,12 +91,30 @@ def _section_centroid_from_kulfan(kulfan: Dict[str, Any]) -> tuple[float, float]
     return _polygon_centroid(x, z)
 
 
+def compute_mean_aerodynamic_chord(wing_cfg: Dict[str, Any], n_span_stations: int = DEFAULT_N_SPAN_STATIONS) -> float:
+    """
+    Mean aerodynamic chord (MAC = int(c^2 dy) / S), matching the cbar formula in
+    utils/llt.py::build_llt_system. Used as the reference chord for Reynolds number
+    and pitching-moment dimensionalization, consistently with how the LLT samples
+    that trained the aerodynamic surrogate were generated.
+    """
+    stations = build_half_wing_stations_from_cfg(wing_cfg, n_span_stations=n_span_stations)
+    y = stations["y_half"]
+    c = stations["c_half"]
+    cA, cB = c[:-1], c[1:]
+    dy = np.abs(y[1:] - y[:-1])
+    S = float(np.sum(0.5 * (cA + cB) * dy))
+    if S <= 0.0:
+        return float(np.mean(c))
+    return float(np.sum(0.5 * (cA ** 2 + cB ** 2) * dy) / S)
+
+
 def compute_dynamic_wing_reference_geometry(
     *,
     wing_cfg: Dict[str, Any],
     root_kulfan: Dict[str, Any],
     tip_kulfan: Dict[str, Any],
-    n_span_stations: int = 7,
+    n_span_stations: int = DEFAULT_N_SPAN_STATIONS,
 ) -> Dict[str, float]:
     """
     Compute spanwise-interpolated wing reference geometry from current root/tip Kulfan sections.

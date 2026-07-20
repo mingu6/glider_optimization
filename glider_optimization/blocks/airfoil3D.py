@@ -16,7 +16,7 @@ import torch.optim.lr_scheduler as lr_scheduler
 import wandb
 from mpl_toolkits.mplot3d import Axes3D
 import logging
-from ..utils.spanwise_geometry import compute_dynamic_wing_reference_geometry, _section_centroid_from_kulfan
+from ..utils.spanwise_geometry import compute_dynamic_wing_reference_geometry, _section_centroid_from_kulfan, DEFAULT_N_SPAN_STATIONS
 
 warnings.filterwarnings("ignore", "FigureCanvasAgg is non-interactive")
 
@@ -53,7 +53,7 @@ class Airfoil3D(Block):
         self._iter = 0
         self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, gamma=af_conf.gamma)
         self.frames = []
-        self._n_span_stations = 7
+        self._n_span_stations = DEFAULT_N_SPAN_STATIONS
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:

@@ -1,0 +1,43 @@
+run:
+  seed: 42
+  device: cuda
+  max_outer_iters: 500
+
+airfoil:
+  lr: 0.01
+  upper_initial_weights: [0.18109497, 0.21268419, 0.28098503, 0.24864887, 0.2402814, 0.27262843, 0.25776474, 0.27817638]
+  lower_initial_weights: [-0.16965146, -0.09364138, -0.06345896, -0.0067966, -0.0902447,  0.02081845, -0.03575216, -0.00223623]
+  leading_edge_weight: 0.10647
+  TE_thickness: 0.00257
+
+io:
+  gif_fps: 10
+  log_every: 10
+  checkpoint_dir: ./runs/test
+  wandb:
+    enabled: true
+    project: "glider-optimization"
+    tags: ["soft landing"]
+    notes: "Testing soft landing"
+
+neuralFoilSampling:
+  AoA_min: -30
+  AoA_max: 30
+  Re_min: 100
+  Re_max: 100000
+  n_samples: 1024
+  neuralFoil_size: xxxlarge
+  rho: 10.0
+  min_confidence: 0.6
+  min_avg_Cl_Cd: 2.5
+
+reducedModel:
+  chebyshev_degree: 25
+  l2_reg: 0
+
+ocp:
+  terminal_state_weight: [5, 100, 2, 0, 0, 5, 5, 0.01]
+  initial_states: [[0, 2 , 0. , 0., 6., 0. , 0., 0.01], [0, 3 , 0. , 0., 6., 0. , 0., 0.01], [0, 4 , 0. , 0., 6., 0. , 0., 0.01], [0, 5 , 0. , 0., 6., 0. , 0., 0.01]]
+
+evaluation:
+  mode: SoftLanding

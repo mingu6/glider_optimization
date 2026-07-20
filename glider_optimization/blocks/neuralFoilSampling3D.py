@@ -10,7 +10,7 @@ import logging
 import numpy as np
 import wandb
 from ..utils.llt import LLTImplicitFn, _MODEL_SIZE_TO_ID, _DEVICE_TO_ID
-from ..utils.spanwise_geometry import build_half_wing_stations_from_cfg, mix_root_tip_torch
+from ..utils.spanwise_geometry import build_half_wing_stations_from_cfg, mix_root_tip_torch, DEFAULT_N_SPAN_STATIONS
 
 
 class NeuralFoilSampling3D(Block):
@@ -21,7 +21,7 @@ class NeuralFoilSampling3D(Block):
         self.device = torch.device(config.run.device)
         nfConfig = self.config.neuralFoilSampling
        
-        n_span_stations = 7
+        n_span_stations = DEFAULT_N_SPAN_STATIONS
         plane_cfg = getattr(self.config, "plane", {}) or {}
         wing_cfg = plane_cfg.get("wing", {}) if isinstance(plane_cfg, dict) else {}
         stations = build_half_wing_stations_from_cfg(wing_cfg, n_span_stations=n_span_stations)
@@ -40,6 +40,7 @@ class NeuralFoilSampling3D(Block):
         self.llt_S       = torch.as_tensor(comp["S"],         dtype=torch.float32, device = self.device)
         self.llt_cbar    = torch.as_tensor(comp["cbar"],      dtype=torch.float32, device = self.device)
         self.llt_x_c4    = torch.as_tensor(comp["x_c4_mid"],  dtype=torch.float32, device = self.device)
+        self.llt_x_ref   = torch.as_tensor(comp["x_ref"],     dtype=torch.float32, device = self.device)
         self.llt_span    = torch.as_tensor(comp["span"],      dtype=torch.float32, device = self.device)
         self.llt_D_nf    = torch.as_tensor(comp["D_nf"],      dtype=torch.float32, device = self.device)
         self.llt_D_tr    = torch.as_tensor(comp["D_tr"],      dtype=torch.float32, device = self.device)
@@ -123,7 +124,7 @@ class NeuralFoilSampling3D(Block):
             alpha_deg.reshape(-1), V.reshape(-1),
             upper, lower, LE.reshape(-1), TE.reshape(-1),
             self.llt_dy, self.llt_y, self.llt_c, self.llt_tw, self.llt_S, self.llt_cbar,
-            self.llt_x_c4, self.llt_span,
+            self.llt_x_c4, self.llt_x_ref, self.llt_span,
             self.llt_D_nf, self.llt_D_tr, self.llt_mirror,
             self.llt_cos_sw, self.llt_cos2_sw,
             self.llt_rho, self.llt_mu,

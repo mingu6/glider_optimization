@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.collections import LineCollection
 from ..config import Config, EvaluationMode
+from .spanwise_geometry import compute_mean_aerodynamic_chord
 class GliderPerching :
     def __init__(self, config: Config, project_name='glider-perching', wing_reference_geometry=None):
         self.project_name = project_name
@@ -111,7 +112,11 @@ class GliderPerching :
                 span = float(2.0 * y[-1]) if y[-1] > 0 else 0.0
                 if S_half > 0 and span > 0:
                     S_w = float(2.0 * S_half)
-                    chord = float(S_w / span)
+                    # Reference chord for Re and CM must be the mean aerodynamic chord
+                    # (MAC), matching cbar in utils/llt.py::build_llt_system — NOT the
+                    # mean geometric chord S_w/span, which is a different length for
+                    # any tapered wing and would query the surrogate at the wrong Re.
+                    chord = compute_mean_aerodynamic_chord(wing_cfg)
 
                     den_cg = float(np.trapezoid(c, y))
                     if den_cg > 0:

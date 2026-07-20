@@ -132,10 +132,13 @@ def build_llt_system(y_half, c_half, xle_half, twist_half, z_half=None, dihedral
     x_c4B = xleB + 0.25*cB
     x_c4_mid = 0.5*(x_c4A + x_c4B)
 
-    # Reference point: quarter-chord at y = 0 on the symmetry axis
-
-    x_ref=0.019
-    #x_ref=0.032 # from flow5
+    # Reference point for the total pitching moment: area-weighted mean quarter-chord
+    # location of the half-wing (same point as l_w_ac in glider_jinenv.py, so the
+    # moment lever-arm term below is relative to where the dynamics apply the
+    # resultant wing force).
+    x_ac_half = xle_half + 0.25 * c_half
+    _den_ref = np.trapezoid(c_half, y_half)
+    x_ref = float(np.trapezoid(c_half * x_ac_half, y_half) / _den_ref) if _den_ref > 0 else float(np.mean(x_ac_half))
     z_ref = -0.002  # your geometry uses z=0 for the quarter-chord line
 
     # Mean aerodynamic chord (length) for coefficient normalization
@@ -196,6 +199,7 @@ class LLTConst:
     S: torch.Tensor
     cbar: torch.Tensor
     x_c4: torch.Tensor
+    x_ref: torch.Tensor
     span: torch.Tensor
     D_nf: torch.Tensor
     D_tr: torch.Tensor
@@ -408,20 +412,24 @@ def _compute_coeffs(
 
     q = 0.5 * const.rho * (V ** 2)  # (B,1)
 
-    # Lp = q * c * cl # Local lift per unit span (before integrating with dy), unused in final CL but useful for debugging and understanding the distribution of lift along the span.
+    Lp = const.rho * V * Gamma  # (B,n_pan) local lift per unit span (Kutta-Joukowski)
     Dp = q * c * cos2_sw * cd   # q·c·cos²Λ·Cd  (d_n/dy = 1/cosΛ cancels one power)
     Di = const.rho * Gamma * w_tr #Treffz plane here for better momentum conservation - consistent with flow5 methodology
 
     # Integrals
-    L = const.rho * V.squeeze(-1) * torch.sum(Gamma * dy, dim=-1)  # (B,)
+    L = torch.sum(Lp * dy, dim=-1)  # (B,)
     D = torch.sum((Dp + Di) * dy, dim=-1)
 
     denom = (q.squeeze(-1) * const.S).clamp_min(1e-30)
     CL = L / denom
     CD = D / denom
 
-    # Pitching moment about the quarter-chord line (NeuralFoil CM is about c/4)
-    Mprime_c4 = q * (c ** 2) * cos3_sw * cm
+    # Pitching moment: each section's own moment about its own c/4 (NeuralFoil CM
+    # convention), plus the lever-arm term that transfers every section's lift to
+    # the common reference point x_ref. Required whenever x_c4 varies spanwise
+    # (sweep/taper); without it the total moment is only correct for a straight,
+    # unswept wing.
+    Mprime_c4 = q * (c ** 2) * cos3_sw * cm - (x_c4 - const.x_ref) * Lp
     M_pitch = torch.sum(Mprime_c4 * dy, dim=-1)
 
     denom_pitch = (q.squeeze(-1) * const.S * const.cbar).clamp_min(1e-30)
@@ -452,6 +460,7 @@ class LLTImplicitFn(torch.autograd.Function):
         S: torch.Tensor,
         cbar: torch.Tensor,
         x_c4: torch.Tensor,
+        x_ref: torch.Tensor,
         span: torch.Tensor,
         D_nf: torch.Tensor,
         D_tr: torch.Tensor,
@@ -474,7 +483,7 @@ class LLTImplicitFn(torch.autograd.Function):
         ctx.device_id = int(device_id.item())
 
         const = LLTConst(
-            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, span=span,
+            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, x_ref=x_ref, span=span,
             D_nf=D_nf, D_tr=D_tr, mirror_of=mirror_of,
             cos_sweep=cos_sweep, cos2_sweep=cos2_sweep,
             rho=rho, mu=mu,
@@ -545,8 +554,12 @@ class LLTImplicitFn(torch.autograd.Function):
                 worst_alpha = alpha2[worst_idx, 0].item()
                 worst_V = V2[worst_idx, 0].item()
                 worst_Re = (const.rho * worst_V * const.c.mean() / const.mu).item()
-                print(f"⚠️  LLT did NOT converge after {max_iter} iterations, final rel_diff={final_rel_diff:.2e}")
-                print(f"    Worst sample: AoA={worst_alpha:.1f}°, V={worst_V:.2f} m/s, Re≈{worst_Re:.0f}")
+                raise RuntimeError(
+                    f"LLT did not converge after {max_iter} iterations (final_rel_diff={final_rel_diff:.2e}). "
+                    f"Worst sample: AoA={worst_alpha:.1f} deg, V={worst_V:.2f} m/s, Re~{worst_Re:.0f}. "
+                    "Gradients from a non-converged fixed point are invalid, so this is a hard failure "
+                    "rather than a warning."
+                )
 
             Gamma_star = Gamma
             C = _compute_coeffs(Gamma_star, alpha2, V2, upper, lower, LE, TE, const)
@@ -573,16 +586,18 @@ class LLTImplicitFn(torch.autograd.Function):
             # Store final residual for backward pass decision
             ctx.final_residual = final_rel_diff
             
-            # DIAGNOSTIC: Check for NaN/Inf in coefficients
+            # Check for NaN/Inf in coefficients: a hard failure, not a warning.
             if not torch.isfinite(C).all():
-                print(f"🚨 LLT produced non-finite coefficients!")
-                print(f"   C stats: min={C.min().item():.6f}, max={C.max().item():.6f}")
-                print(f"   Gamma stats: min={Gamma_star.min().item():.6f}, max={Gamma_star.max().item():.6f}")
+                raise RuntimeError(
+                    f"LLT produced non-finite coefficients: "
+                    f"C min={C.min().item():.6g} max={C.max().item():.6g}, "
+                    f"Gamma min={Gamma_star.min().item():.6g} max={Gamma_star.max().item():.6g}"
+                )
 
         ctx.save_for_backward(
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
-            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of,
+            dy, y, c, tw, S, cbar, x_c4, x_ref, span, D_nf, D_tr, mirror_of,
             cos_sweep, cos2_sweep,
             rho, mu,
             beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
@@ -604,7 +619,7 @@ class LLTImplicitFn(torch.autograd.Function):
         (
             Gamma_star, alpha2, V2,
             upper, lower, LE, TE,
-            dy, y, c, tw, S, cbar, x_c4, span, D_nf, D_tr, mirror_of,
+            dy, y, c, tw, S, cbar, x_c4, x_ref, span, D_nf, D_tr, mirror_of,
             cos_sweep, cos2_sweep,
             rho, mu,
             beta_t, tol_t, n_iter_t, max_iter_t, enforce_sym_t
@@ -612,7 +627,7 @@ class LLTImplicitFn(torch.autograd.Function):
 
         model_size = _ID_TO_MODEL_SIZE[int(ctx.model_size_id)]
         const = LLTConst(
-            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, span=span,
+            dy=dy, y=y, c=c, tw=tw, S=S, cbar=cbar, x_c4=x_c4, x_ref=x_ref, span=span,
             D_nf=D_nf, D_tr=D_tr, mirror_of=mirror_of,
             cos_sweep=cos_sweep, cos2_sweep=cos2_sweep,
             rho=rho, mu=mu,
@@ -706,7 +721,7 @@ class LLTImplicitFn(torch.autograd.Function):
             g_lower,
             g_LE,
             g_TE,
-            None, None, None, None, None, None, None, None,  # dy, y, c, tw, S, cbar, x_c4, span
+            None, None, None, None, None, None, None, None, None,  # dy, y, c, tw, S, cbar, x_c4, x_ref, span
             None, None, None,                                 # D_nf, D_tr, mirror_of
             None, None,                                       # cos_sweep, cos2_sweep
             None, None,                                       # rho, mu
