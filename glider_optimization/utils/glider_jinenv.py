@@ -53,14 +53,13 @@ class GliderPerching :
     def initDyn(self):
         # set the global parameters
         m = 0.065
-        l_w_i = -0.005                                # vector to leading edge from total body center of mass
-        l_w_f = -0.015                                # vector to trailing edge from total body center of mass
+        l_w = -0.01                                   # vector from CoM to wing aerodynamic center (quarter-chord point)
+        chord_w = 0.06                                # wing mean aerodynamic chord length (conservative correction from the buggy 0.01; adjust if the real drone's chord is known)
         l = 0.26                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
         self.l = l
         l_e = 0.02                                    # distance from the hinge to the mean aerodynamic chord of the elevator
         rho = 1.225                                   # assume Standard sea-level air density
         m_f = 0.4 * m                                 # mass of fuselage
-        l_w = 0.5*(l_w_i+l_w_f)                       # mean aerodynamic chord location
         g = 9.81
         S_w = 0.158
         S_e = 0.017
@@ -79,7 +78,7 @@ class GliderPerching :
         m_e = 0.6 * m * S_e / (S_w + S_e)
         l_f = -(l_w * m_w + (l - l_e) * m_e) / m_f      # vector to fuselage CoM
         I = m_w * l_w ** 2 + m_e * (l + l_e) ** 2 + m_f * l_f ** 2
-        chord = np.abs(l_w_f - l_w_i) # mean aerodynamic chord length
+        chord = chord_w # mean aerodynamic chord length
         
         # Declare system variables
         x = SX.sym("x")
@@ -96,17 +95,14 @@ class GliderPerching :
         self.X = vertcat(x, z, theta, phi, xdot, zdot, thetadot, t)
         self.U = phidot
 
-        # wing mean chord 
-        l_w_m = (l_w_i + l_w_f) / 2
-
-        com_w = l_w_m + self.mc_to_wcom(l_w_m)
-        com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption)                
+        com_w = l_w + self.mc_to_wcom(l_w)
+        com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption)
         com_f = l_f
         com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
 
-        # geometric centroid of aerodynamic surfaces (mean chord for flat plate)
-        x_wdot = xdot + l_w_m * thetadot * sin(theta)
-        z_wdot = zdot - l_w_m * thetadot * cos(theta)
+        # geometric centroid of aerodynamic surfaces (wing aerodynamic center)
+        x_wdot = xdot + l_w * thetadot * sin(theta)
+        z_wdot = zdot - l_w * thetadot * cos(theta)
         x_edot = xdot + l * thetadot * sin(theta) + l_e * (thetadot + phidot) * sin(theta + phi)
         z_edot = zdot - l * thetadot * cos(theta) - l_e * (thetadot + phidot) * cos(theta + phi)
         

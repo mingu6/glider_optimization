@@ -323,7 +323,9 @@ class COCsys:
                    "w_opt": w_opt,
                    "lam_g": lam_g,
                    "lam_x": lam_x,
-                   "success": success}
+                   "success": success,
+                   "return_status": stats.get('return_status'),
+                   "iter_count": stats.get('iter_count')}
 
         return opt_sol
 

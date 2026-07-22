@@ -48,7 +48,7 @@ def solve_worker(config: Config,
     X_next = X + dt/6*(k1 + 2*k2 + 2*k3 + k4)
 
     env.initCost(state_weights=config.ocp.terminal_state_weight, wu=config.ocp.stage_control_weight, init_state=init_state)
-    env.initConstraints(-pi/3, pi/8, 13)
+    env.initConstraints(-pi/3, pi/8, 2.2)
     
     coc.setAuxvarVariable(vertcat(env.dyn_auxvar))
     coc.setStateVariable(env.X)
@@ -126,10 +126,21 @@ class OCP(Block):
         num_workers = min(mp.cpu_count(), len(worker_args))
         if num_workers < 1: num_workers = 1
         
-        with mp.Pool(processes=num_workers) as pool:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=num_workers) as pool:
             results = pool.starmap(solve_worker, worker_args)
             
         self.last_trajs = results
+        
+        self.logger.info(
+            "position error: %.6f",
+            np.mean([np.linalg.norm(t["state_traj_opt"][-1][:2]) for t in self.last_trajs])
+        )
+
+        self.logger.info(
+            "velocity error: %.6f",
+            np.mean([np.linalg.norm(t["state_traj_opt"][-1][4:6]) for t in self.last_trajs])
+        )
         
         failures = sum(1 for r in results if not r["success"])
         if failures > 0:
@@ -146,8 +157,8 @@ class OCP(Block):
         for i, traj in enumerate(self.last_trajs): 
             np.save(f"traj_{i}_{iteration}.npy", traj['state_traj_opt'])
             
-        if iteration == 0 or iteration == (num_iterations - 1):
-            self.plot_animations(iteration)   
+        #if iteration == 0 or iteration == (num_iterations - 1):
+        #    self.plot_animations(iteration)   
 
         end_time = time.perf_counter()
         forward_time = end_time - start_time
