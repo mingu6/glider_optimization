@@ -37,12 +37,9 @@ def main(argv: Optional[list] = None) -> int:
     cfg = load_config(Path(args.config))
     cfg = _apply_overrides(cfg, args)
     setup_logging(cfg.io)
-    
-    if cfg.run.is_baseline:
-        from glider_optimization.baselineRunner import BaselineRunner as Runner 
-    else:
-        from glider_optimization.runner import Runner
-        
+
+    from glider_optimization.runner import Runner
+
     runner = Runner(cfg)
     try:
         runner.run()

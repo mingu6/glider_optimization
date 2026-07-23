@@ -1,7 +1,9 @@
 experiments/*
 runs/*
 wandb/*
+baseline/wandb/*
 *.gif
 *.pyc
+*.npy
 *.log
 *.egg-info

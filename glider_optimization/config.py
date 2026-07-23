@@ -9,7 +9,6 @@ class RunConfig(BaseModel):
     seed: int = 0
     device: str = "cpu"
     max_outer_iters: int = 50
-    is_baseline: bool = False
     
 class AirfoilConfig(BaseModel):
     lr: float = 1e-2
