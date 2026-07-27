@@ -18,14 +18,15 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import time
 
-def solve_worker(config: Config, 
-                 init_state: List[float], 
-                 auxvar_vector: np.ndarray, 
-                 prev_w_opt: Optional[List[float]] = None, 
-                 prev_lam_g: Optional[List[float]] = None, 
+def solve_worker(config: Config,
+                 init_state: List[float],
+                 auxvar_vector: np.ndarray,
+                 wing_geometry: Optional[Dict[str, Any]] = None,
+                 prev_w_opt: Optional[List[float]] = None,
+                 prev_lam_g: Optional[List[float]] = None,
                  prev_lam_x: Optional[List[float]] = None) -> Dict[str, Any]:
 
-    env = GliderPerching(config)
+    env = GliderPerching(config, wing_geometry=wing_geometry)
     coc = COCsys()
     
     env.initDyn()
@@ -96,8 +97,16 @@ class OCP(Block):
         # Not used, kept only for plotting/animation purposes
         self.env = GliderPerching(self.config)
         self.env.state_weights = config.ocp.terminal_state_weight
-        self.last_trajs: List[Dict[str, Any]] = [] 
-        
+        self.last_trajs: List[Dict[str, Any]] = []
+
+        # Warm-start seed per initial condition, kept separate from last_trajs: a
+        # "successful" IPOPT solve can still land in a much worse local optimum than
+        # before, and warm-starting the next solve from it tends to lock the solver
+        # into that same bad basin indefinitely. Only accept a new solution into the
+        # warm-start reservoir if it isn't a large regression from the last accepted one.
+        self.warm_start_trajs: List[Optional[Dict[str, Any]]] = []
+        self._warm_start_regression_factor = 1.5
+
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
         start_time = time.perf_counter()
@@ -107,21 +116,22 @@ class OCP(Block):
         weights_CM = downstream_info["phi_CM"].view(-1, 1).detach().cpu().numpy()
         
         auxvar_vector = np.vstack([weights_CL, weights_CD, weights_CM])
-        
+        wing_geometry = downstream_info.get("wing_geometry")
+        iteration = downstream_info["iteration"]
+
         initial_states = self.config.ocp.initial_states
         num_states = len(initial_states)
-        
+
         worker_args = []
         for i, init_state in enumerate(initial_states):
             prev_w, prev_lg, prev_lx = None, None, None
-            if len(self.last_trajs) > i:
-                 prev_sol = self.last_trajs[i]
-                 if prev_sol["success"]:
-                    prev_w = prev_sol.get("w_opt")
-                    prev_lg = prev_sol.get("lam_g")
-                    prev_lx = prev_sol.get("lam_x")
-            
-            worker_args.append((self.config, init_state, auxvar_vector, prev_w, prev_lg, prev_lx))
+            if len(self.warm_start_trajs) > i and self.warm_start_trajs[i] is not None:
+                prev_sol = self.warm_start_trajs[i]
+                prev_w = prev_sol.get("w_opt")
+                prev_lg = prev_sol.get("lam_g")
+                prev_lx = prev_sol.get("lam_x")
+
+            worker_args.append((self.config, init_state, auxvar_vector, wing_geometry, prev_w, prev_lg, prev_lx))
 
         num_workers = min(mp.cpu_count(), len(worker_args))
         if num_workers < 1: num_workers = 1
@@ -131,23 +141,56 @@ class OCP(Block):
             results = pool.starmap(solve_worker, worker_args)
             
         self.last_trajs = results
-        
-        self.logger.info(
-            "position error: %.6f",
-            np.mean([np.linalg.norm(t["state_traj_opt"][-1][:2]) for t in self.last_trajs])
-        )
 
-        self.logger.info(
-            "velocity error: %.6f",
-            np.mean([np.linalg.norm(t["state_traj_opt"][-1][4:6]) for t in self.last_trajs])
+        def _fmt_cost(traj):
+            try:
+                return float(traj["cost"][0][0])
+            except Exception:
+                return float("nan")
+
+        if len(self.warm_start_trajs) < len(results):
+            self.warm_start_trajs.extend([None] * (len(results) - len(self.warm_start_trajs)))
+        accepted = [False] * len(results)
+        for i, traj in enumerate(results):
+            if not traj["success"]:
+                continue
+            cost = _fmt_cost(traj)
+            prev = self.warm_start_trajs[i]
+            if prev is None or cost <= self._warm_start_regression_factor * _fmt_cost(prev):
+                self.warm_start_trajs[i] = traj
+                accepted[i] = True
+
+        per_traj_summary = ", ".join(
+            f"[{i}] {'ok' if t['success'] else 'FAIL'} cost={_fmt_cost(t):.4f}"
+            + (" (warm-start updated)" if accepted[i] else " (warm-start kept previous)" if t["success"] else "")
+            for i, t in enumerate(self.last_trajs)
         )
-        
-        failures = sum(1 for r in results if not r["success"])
+        self.logger.info("per-trajectory: %s", per_traj_summary)
+        if self.config.io.wandb.enabled:
+            traj_metrics = {}
+            for i, t in enumerate(self.last_trajs):
+                traj_metrics[f"ocp/cost_traj_{i}"] = _fmt_cost(t)
+                traj_metrics[f"ocp/success_traj_{i}"] = float(t["success"])
+            wandb.log(traj_metrics, step=iteration)
+
+        successful = [t for t in self.last_trajs if t["success"]]
+        if successful:
+            self.logger.info(
+                "position error: %.6f",
+                np.mean([np.linalg.norm(t["state_traj_opt"][-1][:2]) for t in successful])
+            )
+            self.logger.info(
+                "velocity error: %.6f",
+                np.mean([np.linalg.norm(t["state_traj_opt"][-1][4:6]) for t in successful])
+            )
+        else:
+            self.logger.critical("All IPOPT solves failed; skipping position/velocity error logging")
+
+        failures = num_states - len(successful)
         if failures > 0:
-            self.logger.warning(f"⚠️ {failures}/{num_states} IPOPT solves failed")
+            self.logger.warning(f"{failures}/{num_states} IPOPT solves failed")
             
         num_iterations = self.config.run.max_outer_iters
-        iteration = downstream_info["iteration"]
         self._it = iteration
         log_every = self.config.io.log_every
         
@@ -182,24 +225,33 @@ class OCP(Block):
         dJ_deps_list = upstream_grads["dJ_deps"]
         
         total_dJ_dphi_np = None
+        num_success = 0
 
         for i, traj in enumerate(self.last_trajs):
+            if not traj["success"]:
+                continue
+
             dJ_deps = dJ_deps_list[i]
-            
+
             auxsys_COC = traj['auxsys_COC']
             idoc_ctx = build_blocks_idoc(auxsys_COC, delta)
             traj_deriv_COC = idoc_full(idoc_ctx)
-            
+
             deps_dphi = traj_deriv_COC['state_traj_opt']
-            
+
             dJ_dphi_partial = np.einsum('ij,ijk->k', dJ_deps, deps_dphi).reshape(2028,1)
-            
+
             if total_dJ_dphi_np is None:
                 total_dJ_dphi_np = dJ_dphi_partial
             else:
                 total_dJ_dphi_np += dJ_dphi_partial
-             
-        total_dJ_dphi_np /= len(self.last_trajs)
+            num_success += 1
+
+        if num_success == 0:
+            self.logger.critical("All IPOPT solves failed this iteration; skipping airfoil gradient update")
+            total_dJ_dphi_np = np.zeros((2028, 1))
+        else:
+            total_dJ_dphi_np /= num_success
 
         dJ_dphi = torch.from_numpy(total_dJ_dphi_np).float().to(self.device)
         dJ_dphi = dJ_dphi.view(3, -1)

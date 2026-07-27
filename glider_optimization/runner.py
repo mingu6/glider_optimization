@@ -5,7 +5,7 @@ import numpy as np
 import wandb
 from glider_optimization.config import Config
 from glider_optimization.blockBase import Block
-from glider_optimization.blocks import Airfoil, NeuralFoilSampling, ReducedModel, OCP, Evaluation
+from glider_optimization.blocks import Airfoil, Airfoil3D, NeuralFoilSampling, NeuralFoilSampling3D, ReducedModel, OCP, Evaluation
 from .utils.resume import load_checkpoint_from_wandb
 
 
@@ -18,9 +18,10 @@ class Runner:
         if self.wandb_enabled:
             self._init_wandb()
         
+        use_3d = config.neuralFoilSampling.use_3d_llt
         self.blocks: Dict[str, Block] = {
-            "Airfoil": Airfoil(config),
-            "NeuralFoilSampling": NeuralFoilSampling(config),
+            "Airfoil": Airfoil3D(config) if use_3d else Airfoil(config),
+            "NeuralFoilSampling": NeuralFoilSampling3D(config) if use_3d else NeuralFoilSampling(config),
             "ReducedModel": ReducedModel(config),
             "OCP": OCP(config),
             "Evaluation": Evaluation(config)

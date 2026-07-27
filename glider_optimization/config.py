@@ -44,7 +44,12 @@ class NeuralFoilSamplingConfig(BaseModel):
     min_confidence: float = 0.7
     min_avg_Cl_Cd: float = 2.0
     rho: float = 10.0
-    
+
+    use_3d_llt: bool = False
+    llt_beta: float = 0.5
+    llt_tol: float = 1e-5
+    llt_max_iter: int = 200
+
     @field_validator("neuralFoil_size")
     def check_neuralFoil_size(cls, v):
         allowed = {"xxsmall", "xsmall", "small", "medium", "large", "xlarge", "xxlarge", "xxxlarge"}
@@ -97,7 +102,8 @@ class Config(BaseModel):
     io: IOConfig
     ocp: OCPConfig = Field(default_factory=OCPConfig)
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
-    
+    plane: dict[str, Any] = Field(default_factory=dict)
+
 def load_config(path: Path) -> Config:
     with path.open("r") as f:
         data = yaml.safe_load(f)

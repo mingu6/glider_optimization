@@ -65,12 +65,17 @@ class Evaluation(Block):
         return {"dJ_deps": dJ_deps_list}
 
     def forward_ocp_cost(self):
-        
-        cost_vals = [float(t["cost"][0][0]) for t in self.last_traj]
+        cost_vals = [float(t["cost"][0][0]) for t in self.last_traj if t["success"]]
+        if not cost_vals:
+            self.logger.critical("All trajectories failed; objective is undefined this iteration")
+            return float("nan")
         return sum(cost_vals) / len(cost_vals)
-        
+
     def forward_time(self):
-        total_time = [t["state_traj_opt"][:,7].sum() for t in self.last_traj]
+        total_time = [t["state_traj_opt"][:,7].sum() for t in self.last_traj if t["success"]]
+        if not total_time:
+            self.logger.critical("All trajectories failed; objective is undefined this iteration")
+            return float("nan")
         return sum(total_time) / len(total_time)
     
     def backward_ocp_cost(self):

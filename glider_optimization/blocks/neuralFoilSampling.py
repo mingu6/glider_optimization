@@ -40,7 +40,6 @@ class NeuralFoilSampling(Block):
         
         self.min_avg_Cl_Cd = nfConfig.min_avg_Cl_Cd
         self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
-        self.use_3d_llt = bool(getattr(nfConfig, "use_3d_llt", False))
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:

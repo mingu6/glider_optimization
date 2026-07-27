@@ -12,9 +12,10 @@ from matplotlib.patches import Circle, Rectangle
 from matplotlib.collections import LineCollection
 from ..config import Config, EvaluationMode
 class GliderPerching :
-    def __init__(self, config: Config, project_name='glider-perching'):
+    def __init__(self, config: Config, project_name='glider-perching', wing_geometry=None):
         self.project_name = project_name
         self.config = config
+        self.wing_geometry = wing_geometry
 
     def C_L(self, alpha):
         return 2 * sin(alpha) * cos(alpha)
@@ -54,16 +55,18 @@ class GliderPerching :
         # set the global parameters
         m = 0.065
         l_w = -0.01                                   # vector from CoM to wing aerodynamic center (quarter-chord point)
-        chord_w = 0.06                                # wing mean aerodynamic chord length (conservative correction from the buggy 0.01; adjust if the real drone's chord is known)
+        chord_w = self.wing_geometry["chord"] if self.wing_geometry else 0.06  # wing mean aerodynamic chord length
+        centroid_offset = self.wing_geometry.get("centroid_offset", 0.0) if self.wing_geometry else 0.0
         l = 0.26                                      # vector from CoM to start of elevator (attachment point to body / hinge point)
         self.l = l
         l_e = 0.02                                    # distance from the hinge to the mean aerodynamic chord of the elevator
         rho = 1.225                                   # assume Standard sea-level air density
         m_f = 0.4 * m                                 # mass of fuselage
         g = 9.81
-        S_w = 0.158
+        S_w = self.wing_geometry["S_w"] if self.wing_geometry else 0.158
         S_e = 0.017
-        mu_air = 1.789e-5                               # assume Standard sea-level air dynamic viscosity      
+        chord_e = 0.06                                # elevator mean aerodynamic chord (independent of the wing's)
+        mu_air = 1.789e-5                               # assume Standard sea-level air dynamic viscosity
         
         chebyshev_deg = self.config.reducedModel.chebyshev_degree
 
@@ -95,7 +98,7 @@ class GliderPerching :
         self.X = vertcat(x, z, theta, phi, xdot, zdot, thetadot, t)
         self.U = phidot
 
-        com_w = l_w + self.mc_to_wcom(l_w)
+        com_w = l_w + self.mc_to_wcom(l_w) + centroid_offset
         com_e = l + l_e # simplifying assumption, the elevator's com doesn't depend on the angle (quasi static assumption)
         com_f = l_f
         com_a = (com_w*m_w + com_e*m_e + com_f*m_f) / (m_w + m_e + m_f)
@@ -141,7 +144,7 @@ class GliderPerching :
         F_Le = self.C_L(alpha_e) * vertcat(-z_edot, x_edot)    # lift force vector (proportional to)
         F_De = self.C_D(alpha_e) * vertcat(-x_edot, -z_edot)   # drag force vector (proportional to)
         F_e = 0.5 * rho * v_e * S_e * (F_Le + F_De)
-        M_e = 0.5 * rho * v_e**2 * S_e * chord * self.C_M(alpha_e)
+        M_e = 0.5 * rho * v_e**2 * S_e * chord_e * self.C_M(alpha_e)
 
         # compute torques with respect to fixed reference point induced by forces
 
