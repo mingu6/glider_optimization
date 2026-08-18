@@ -3,9 +3,9 @@ import logging
 import random
 import numpy as np
 import wandb
-from glider_optimization.config import Config
+from glider_optimization.config import Config, EvaluationMode
 from glider_optimization.blockBase import Block
-from glider_optimization.blocks import Airfoil, Airfoil3D, NeuralFoilSampling, NeuralFoilSampling3D, ReducedModel, OCP, Evaluation
+from glider_optimization.blocks import Airfoil, Airfoil3D, NeuralFoilSampling, NeuralFoilSampling3D, ReducedModel, OCP, Evaluation, RoboticArm
 from .utils.resume import load_checkpoint_from_wandb
 
 
@@ -19,13 +19,21 @@ class Runner:
             self._init_wandb()
         
         use_3d = config.neuralFoilSampling.use_3d_llt
-        self.blocks: Dict[str, Block] = {
-            "Airfoil": Airfoil3D(config) if use_3d else Airfoil(config),
-            "NeuralFoilSampling": NeuralFoilSampling3D(config) if use_3d else NeuralFoilSampling(config),
-            "ReducedModel": ReducedModel(config),
-            "OCP": OCP(config),
-            "Evaluation": Evaluation(config)
-        }
+
+        if config.evaluation.mode != EvaluationMode.RobotThrowing:
+            self.blocks: Dict[str, Block] = {
+                "Airfoil": Airfoil3D(config) if use_3d else Airfoil(config),
+                "NeuralFoilSampling": NeuralFoilSampling3D(config) if use_3d else NeuralFoilSampling(config),
+                "ReducedModel": ReducedModel(config),
+                "OCP": OCP(config),
+                "Evaluation": Evaluation(config)
+            }
+        else:
+            self.blocks: Dict[str, Block] = {
+                "Robot": RoboticArm(config),
+                "OCP": OCP(config),
+                "Evaluation": Evaluation(config)
+            }
         
         self.start_iteration = 0
         self._setup_environment()
@@ -33,6 +41,30 @@ class Runner:
         if self._resume_from_checkpoint:
             self._resume()
             print(f"✓ Initialized state from wandb checkpoint: run={config.io.wandb.checkpoint_run_id}, iter={config.io.wandb.checkpoint_iteration}")
+
+    def _wandb_config(self):
+        cfg = self.config
+        common = {
+            "seed": cfg.run.seed,
+            "device": cfg.run.device,
+            "max_outer_iters": cfg.run.max_outer_iters,
+            "evaluation_mode": cfg.evaluation.mode.value,
+        }
+        if cfg.evaluation.mode == EvaluationMode.RobotThrowing:
+            return common | {
+                "arm_lr": cfg.arm.lr,
+                "horizon": cfg.arm.horizon,
+                "integrator": cfg.arm.integrator,
+                "targets": cfg.arm.targets,
+                "struct_mass": cfg.arm.struct_mass,
+                "torque_budget": cfg.arm.torque_budget,
+            }
+        return common | {
+            "airfoil_lr": cfg.airfoil.lr,
+            "neuralfoil_size": cfg.neuralFoilSampling.neuralFoil_size,
+            "n_samples": cfg.neuralFoilSampling.n_samples,
+            "chebyshev_degree": cfg.reducedModel.chebyshev_degree,
+        }
 
     def _init_wandb(self):
         cfg = self.config
@@ -43,15 +75,7 @@ class Runner:
                 name=cfg.io.run_name,
                 id=cfg.io.wandb.checkpoint_run_id,
                 resume="allow",
-                config={
-                    "seed": cfg.run.seed,
-                    "device": cfg.run.device,
-                    "max_outer_iters": cfg.run.max_outer_iters,
-                    "airfoil_lr": cfg.airfoil.lr,
-                    "neuralfoil_size": cfg.neuralFoilSampling.neuralFoil_size,
-                    "n_samples": cfg.neuralFoilSampling.n_samples,
-                    "chebyshev_degree": cfg.reducedModel.chebyshev_degree,
-                },
+                config=self._wandb_config(),
                 tags=cfg.io.wandb.tags,
                 notes=cfg.io.wandb.notes,
             )
@@ -60,15 +84,7 @@ class Runner:
                 project=cfg.io.wandb.project,
                 entity=cfg.io.wandb.entity,
                 name=cfg.io.run_name,
-                config={
-                    "seed": cfg.run.seed,
-                    "device": cfg.run.device,
-                    "max_outer_iters": cfg.run.max_outer_iters,
-                    "airfoil_lr": cfg.airfoil.lr,
-                    "neuralfoil_size": cfg.neuralFoilSampling.neuralFoil_size,
-                    "n_samples": cfg.neuralFoilSampling.n_samples,
-                    "chebyshev_degree": cfg.reducedModel.chebyshev_degree,
-                },
+                config=self._wandb_config(),
                 tags=cfg.io.wandb.tags,
                 notes=cfg.io.wandb.notes,
             )

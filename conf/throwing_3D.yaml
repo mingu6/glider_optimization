@@ -1,0 +1,69 @@
+run:
+  seed: 42
+  device: cpu
+  max_outer_iters: 30
+
+io:
+  gif_fps: 10
+  log_every: 1
+  checkpoint_dir: ./runs/throwing
+  wandb:
+    enabled: true
+    project: "glider-optimization"
+    tags: ["RobotThrowing"]
+    notes: "Throwing-arm co-design: segment lengths / taper / mass split / torque split"
+
+evaluation:
+  mode: RobotThrowing
+
+arm:
+  lr: 0.005
+  gamma: 0.99
+
+  # 3 lengths [m], 3 tapers, 3 mass logits, 4 torque logits
+  initial_psi: [0.32, 0.27, 0.11,
+                1.0, 1.0, 1.0,
+                0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0]
+  length_min: 0.08
+  length_max: 0.60
+  taper_min: 0.35
+  taper_max: 1.60
+
+  # fixed budgets: this is a redistribution problem, not a "make it bigger" one
+  struct_mass: 3.6
+  torque_budget: 170.0
+  shoulder_h: 1.30
+  # A heavy ball is what makes the design problem bite. It drops the starting
+  # design's max range from 8.68 m to 7.86 m, but more to the point it makes
+  # DISTAL mass expensive: the hand carries the ball, so mass and torque spent
+  # out at the wrist is paid for on every swing. With a 0.145 kg ball the mass
+  # split barely moved and nearly all the gain came from torque reallocation.
+  ball_mass: 0.4
+  z_target: 1.0
+
+  # inner OCP
+  horizon: 40
+  integrator: rk2
+  # One inner OCP per target. The starting design reaches ~8.7 m, so 8 m is hit
+  # but only by spending the whole time budget, and 10 m is missed by ~1.3 m:
+  # one target pays for the design in swing time, the other in accuracy. Both
+  # are what the design is supposed to earn back.
+  # (off-axis targets need the shoulder to aim during the swing and are
+  # noticeably harder from a cold start)
+  targets: [[8.0, 0.0], [10.0, 0.0]]
+  h_min: 0.004
+  h_max: 0.020
+  h_init: 0.010
+
+  # heavier ball => the max-range knee is sharper, so the cold-start
+  # continuation needs finer steps to walk through it
+  cold_start_first_distance: 4.5
+  cold_start_stages: 9
+  p_joint: 900.0
+  w_miss: 400.0
+  w_time: 2.0
+
+  # outer objective: accuracy traded against swing duration
+  outer_w_miss: 100.0
+  outer_w_time: 1.0

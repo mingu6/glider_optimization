@@ -152,7 +152,8 @@ class COCsys:
             self.init_condition_fn = casadi.Function('initial_condition', [self.auxvar], [self.init_condition])
 
     # optimal control solver (using direct methods)
-    def ocSolver(self, horizon, init_state=None, auxvar_value=1, print_level=0, timeVarying=False, warm_start=False):
+    def ocSolver(self, horizon, init_state=None, auxvar_value=1, print_level=0, timeVarying=False, warm_start=False,
+                 init_guess=None, solver_opts=None):
 
         if not hasattr(self, 'final_equ_cstr'):
             self.setFinalEquCstr()
@@ -254,12 +255,22 @@ class COCsys:
             opts.update({'ipopt.warm_start_init_point': 'yes',
                          'ipopt.warm_start_bound_push': 1e-6,
                          'ipopt.warm_start_mult_bound_push': 1e-6})
+        if solver_opts:
+            opts.update(solver_opts)
         prob = {'f': J, 'x': vertcat(*w), 'g': vertcat(*g)}
         solver = nlpsol('solver', 'ipopt', prob, opts)
         # Solve the NLP
         assert len(lbw) == self.n_state * (horizon+1) + self.n_control * (horizon)
         assert len(ubw) == self.n_state * (horizon+1) + self.n_control * (horizon)
                 
+        # An explicit guess replaces the default rollout-with-mid-range-control.
+        # Warm-starting from the previous outer iteration still wins over it.
+        if init_guess is not None:
+            init_guess = casadi.DM(init_guess).full().flatten().tolist()
+            assert len(init_guess) == len(w0), \
+                f"init_guess has {len(init_guess)} entries, expected {len(w0)}"
+            w0 = init_guess
+
         solver_call_kwargs = {'x0': w0, 'lbx': lbw, 'ubx': ubw, 'lbg': lbg, 'ubg': ubg}
         if warm_start and hasattr(self, 'w_opt_prev') and self.w_opt_prev is not None:
             solver_call_kwargs['x0'] = self.w_opt_prev
@@ -551,7 +562,12 @@ class COCsys:
         Lxe_T = [self.ddLxe_final_fn(state_traj_opt[-1, :], v_final, w_final, auxvar_value).full()]
 
         if self.final_inequ_cstr is not None:
-            Gbarx_T = self.dGx_final_fn(state_traj_opt[-1, :], auxvar_value).full()[(v_final > -threshold)]
+            # The active set at the final node is identified from the constraint VALUES,
+            # exactly as in the stage loop above. Selecting the state block with v_final
+            # (the multipliers, which are >= 0 and so always pass the test) while selecting
+            # the auxvar block with g_final gave the two halves of the same active set a
+            # different number of rows, so A_T and C_T no longer lined up in IDOC.
+            Gbarx_T = self.dGx_final_fn(state_traj_opt[-1, :], auxvar_value).full()[(g_final > -threshold)]
             Gbare_T = self.dGe_final_fn(state_traj_opt[-1, :], auxvar_value).full()[(g_final > -threshold)]
         else:
             Gbarx_T = np.empty((0, self.n_state))
