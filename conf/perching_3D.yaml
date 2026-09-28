@@ -28,6 +28,11 @@ neuralFoilSampling:
   n_samples: 1024
   neuralFoil_size: xxxlarge
   rho: 10.0
+  rho_max: 1.0e4
+  rho_factor: 2.0
+  infeasibility_decrease: 0.75
+  penalty_every: 10
+  dual_every: 5
   min_confidence: 0.6
   min_avg_Cl_Cd: 1.0
   use_3d_llt: true

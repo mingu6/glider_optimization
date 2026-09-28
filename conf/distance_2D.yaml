@@ -1,0 +1,76 @@
+run:
+  seed: 42
+  device: cuda
+  max_outer_iters: 30
+
+airfoil:
+  lr: 0.01
+  upper_initial_weights: [0.18109497, 0.21268419, 0.28098503, 0.24864887, 0.2402814, 0.27262843, 0.25776474, 0.27817638]
+  lower_initial_weights: [-0.16965146, -0.09364138, -0.06345896, -0.0067966, -0.0902447,  0.02081845, -0.03575216, -0.00223623]
+  leading_edge_weight: 0.10647
+  TE_thickness: 0.00257
+io:
+  gif_fps: 10
+  log_every: 1
+  checkpoint_dir: ./runs/distance_2D
+  wandb:
+    enabled: true
+    project: "glider-optimization"
+    tags: ["Distance2D"]
+    notes: "Maximum gliding distance, same design constraints as Perching2D"
+
+# identical to conf/perching_2D.yaml: only the task changes, not the constraints
+neuralFoilSampling:
+  # Left at the full range on purpose: these bounds are not only the constraint's
+  # sampling envelope, they also set the surrogate's validity range inside the OCP
+  # (smooth_gate blends to the analytic CL/CD outside them, and they set the
+  # Chebyshev scaling). Trimming to +/-20 deg moved that blend boundary into the
+  # flight regime and iteration 0 failed to solve in 16 minutes. The over-weighting
+  # of the extreme corners is corrected by quadrature weights in the constraint mean
+  # instead -- see NeuralFoilSampling._envelope_mean.
+  AoA_min: -30
+  AoA_max: 30
+  Re_min: 100
+  Re_max: 100000
+  n_samples: 1024
+  neuralFoil_size: xxxlarge
+  rho: 10.0
+  rho_max: 1.0e4
+  rho_factor: 2.0
+  infeasibility_decrease: 0.75
+  penalty_every: 10
+  # One dual update per outer iteration. At 5 the multiplier only updated six times
+  # in 30 iterations and stayed ~1.1 against a distance objective of ~30, so the
+  # confidence constraint went active at iteration 5 and was still violated at 29.
+  # With one gradient step per outer iteration there is no inner minimisation to
+  # wait for anyway.
+  dual_every: 1
+  # On the trimmed envelope the previous run's final airfoil already scores 0.886,
+  # so 0.6 would never activate. 0.8 leaves headroom to reach but pushes back once
+  # the design starts trading confidence for distance.
+  min_confidence: 0.8
+  min_avg_Cl_Cd: 2.5
+
+reducedModel:
+  chebyshev_degree: 25
+  l2_reg: 0
+
+ocp:
+  # The optimal glide lengthens as the design improves, and with the timestep free
+  # a fixed node count means dt grows with it. At 111 nodes dt reached ~0.057 s by
+  # iteration 6 and the stiff pitch mode stopped resolving: solves diverged to
+  # 27-second "flights" ending in mid-air. 250 nodes pushed that to iteration 20.
+  # Sized here for the *final* flight (~14 s) rather than the initial one (~3.5 s):
+  # 500 nodes holds dt <= 0.028 s across the whole run.
+  horizon: 500
+  # launched level from altitude; the flight is free-final-time and ends at touchdown
+  initial_states: [[0., 2.0, 0., 0., 6.0, 0., 0., 0.03], [0., 2.0, 0., 0., 5.0, 0., 0., 0.03], [0., 1.5, 0., 0., 6.0, 0., 0., 0.03], [0., 1.5, 0., 0., 5.0, 0., 0., 0.03]]
+  # Now multiplies a time integral (see initCost), so it is per second rather than
+  # per node: 0.3 x 111 nodes ~= 33 node-units of effort over a ~4.2 s flight is
+  # ~8 per second, which reproduces the trade-off the 111-node run actually flew.
+  stage_control_weight: 8.0
+  distance_weight: 1.0
+  touchdown_weight: 50.0
+
+evaluation:
+  mode: Distance

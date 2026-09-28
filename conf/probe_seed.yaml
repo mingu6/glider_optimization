@@ -1,0 +1,142 @@
+run:
+  seed: 42
+  device: cuda
+  max_outer_iters: 4
+airfoil:
+  lr: 0.01
+  upper_initial_weights:
+  - 0.3540699779987335
+  - 0.19218066334724426
+  - 0.3727169632911682
+  - 0.3816528022289276
+  - 0.1783106029033661
+  - 0.26299533247947693
+  - 0.41341668367385864
+  - 0.23051802814006805
+  lower_initial_weights:
+  - -0.13508157432079315
+  - -0.08099155128002167
+  - -0.1611526608467102
+  - -0.08981728553771973
+  - 0.07006622105836868
+  - 0.08436340093612671
+  - -0.26990625262260437
+  - 0.16123753786087036
+  leading_edge_weight: 0.03493036702275276
+  TE_thickness: 0.009999999776482582
+io:
+  gif_fps: 10
+  log_every: 10
+  checkpoint_dir: ./runs/probe_seed
+  wandb:
+    enabled: false
+    project: glider-optimization
+    tags:
+    - ParetoSoft2D
+    notes: 'epsilon-constraint: max glide distance s.t. soft-landing cost <= eps'
+neuralFoilSampling:
+  AoA_min: -30
+  AoA_max: 30
+  Re_min: 100
+  Re_max: 100000
+  n_samples: 1024
+  neuralFoil_size: xxxlarge
+  rho: 10.0
+  min_confidence: 0.6
+  min_avg_Cl_Cd: 2.5
+reducedModel:
+  chebyshev_degree: 25
+  l2_reg: 0
+ocp:
+  terminal_state_weight:
+  - 5.0
+  - 100.0
+  - 2.0
+  - 0.0
+  - 0.0
+  - 20.0
+  - 5.0
+  - 0.01
+  initial_states:
+  - - 0
+    - 2
+    - 0.0
+    - 0.0
+    - 6.0
+    - 0.0
+    - 0.0
+    - 0.01
+  - - 0
+    - 3
+    - 0.0
+    - 0.0
+    - 6.0
+    - 0.0
+    - 0.0
+    - 0.01
+  - - 0
+    - 4
+    - 0.0
+    - 0.0
+    - 6.0
+    - 0.0
+    - 0.0
+    - 0.01
+  - - 0
+    - 5
+    - 0.0
+    - 0.0
+    - 6.0
+    - 0.0
+    - 0.0
+    - 0.01
+  distance_weight: 1.0
+  touchdown_weight: 50.0
+  aoa_max: 25.0
+  warm_start_path: null
+evaluation:
+  mode: Distance
+tasks:
+- name: distance
+  mode: Distance
+  horizon: 500
+  stage_control_weight: 8.0
+  initial_states: &id001
+  - - 0
+    - 2
+    - 0.0
+    - 0.0
+    - 6.0
+    - 0.0
+    - 0.0
+    - 0.01
+  - - 0
+    - 3
+    - 0.0
+    - 0.0
+    - 6.0
+    - 0.0
+    - 0.0
+    - 0.01
+  - - 0
+    - 4
+    - 0.0
+    - 0.0
+    - 6.0
+    - 0.0
+    - 0.0
+    - 0.01
+  - - 0
+    - 5
+    - 0.0
+    - 0.0
+    - 6.0
+    - 0.0
+    - 0.0
+    - 0.01
+- name: softlanding
+  mode: SoftLanding
+  horizon: 111
+  stage_control_weight: 0.1
+  epsilon: 262.38
+  initial_states: *id001

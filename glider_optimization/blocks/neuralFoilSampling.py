@@ -2,6 +2,7 @@ from ..blockBase import Block
 from typing import override
 from ..config import Config
 from ..utils.cu_kulfan_airfoil import get_aero_from_kulfan_parameters_cuda
+from ..utils.augmented_lagrangian import AugmentedLagrangian
 from typing import Dict, Any
 import torch
 from math import sqrt   
@@ -27,6 +28,22 @@ class NeuralFoilSampling(Block):
         aoa, re = torch.meshgrid(aoa_1d, re_1d, indexing="ij")
         self.alpha_batch = aoa.reshape(-1)
         self.Re_batch = re.reshape(-1)
+
+        # Chebyshev nodes cluster at the ends of the interval -- correct for the
+        # polynomial fit these samples feed, but wrong for a constraint written as a
+        # mean: it put 37.5% of the weight beyond |AoA| 25 deg, where NeuralFoil is
+        # unconfident for any airfoil, so the constraint was decided by a regime the
+        # glider never flies in. Chebyshev-Gauss quadrature says the uniform-measure
+        # average is recovered by weighting each node with sqrt(1 - x^2) in the
+        # normalised coordinate; the sampling itself is left untouched.
+        def quadrature_weights(nodes_1d, lo, hi):
+            x = 2.0 * (nodes_1d - lo) / (hi - lo) - 1.0
+            return torch.sqrt(torch.clamp(1.0 - x * x, min=0.0))
+
+        w_aoa = quadrature_weights(aoa_1d, nfConfig.AoA_min, nfConfig.AoA_max)
+        w_re = quadrature_weights(re_1d, nfConfig.Re_min, nfConfig.Re_max)
+        w = torch.outer(w_aoa, w_re).reshape(-1)
+        self.constraint_weights = (w / w.sum()).to(torch.float32)
         
         n_val = int(nfConfig.n_samples * 0.2) # 20% validation size
         self.alpha_val = (torch.rand(n_val, device=self.device) * (nfConfig.AoA_max - nfConfig.AoA_min)) + nfConfig.AoA_min
@@ -34,12 +51,41 @@ class NeuralFoilSampling(Block):
         
         self.last_airfoil = None
         
-        self.lambda_conf = torch.tensor(0., device=self.device, requires_grad=False)
-        self.rho = nfConfig.rho
         self.min_confidence = nfConfig.min_confidence
-        
         self.min_avg_Cl_Cd = nfConfig.min_avg_Cl_Cd
-        self.lambda_clcd = torch.tensor(0., device=self.device, requires_grad=False)
+        self.augmented_lagrangian = AugmentedLagrangian(
+            names=("conf", "clcd"),
+            rho=nfConfig.rho,
+            rho_max=nfConfig.rho_max,
+            rho_factor=nfConfig.rho_factor,
+            infeasibility_decrease=nfConfig.infeasibility_decrease,
+            penalty_every=nfConfig.penalty_every,
+            dual_every=nfConfig.dual_every,
+        )
+
+    def _envelope_mean(self, values: torch.Tensor) -> torch.Tensor:
+        """Average over the (AoA, Re) envelope under a uniform measure."""
+        return (values * self.constraint_weights.to(values.device)).sum()
+
+    def constraints(self, aero_coeff: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Design constraints, in the g(x) <= 0 form the augmented Lagrangian expects."""
+        cl_cd = aero_coeff["CL"] / torch.clamp(aero_coeff["CD"], min=1e-5)
+        return {
+            "conf": self.min_confidence - self._envelope_mean(aero_coeff["analysis_confidence"]),
+            "clcd": self.min_avg_Cl_Cd - self._envelope_mean(cl_cd),
+        }
+
+    def _log_constraint_warnings(self, constraints: Dict[str, torch.Tensor]):
+        clcd, conf = (float(constraints[k].detach()) for k in ("clcd", "conf"))
+        if clcd > 1.0:
+            self.logger.warning(
+                f"⚠️ Large Cl/Cd violation. Deficit: {clcd:.3f}. Target: {self.min_avg_Cl_Cd:.3f}"
+            )
+        if conf > 0.1:
+            self.logger.critical(
+                f"⚠️ Large confidence violation detected. Training may become unstable. "
+                f"Deficit {conf:.3f}. Target {self.min_confidence:.3f}"
+            )
 
     @override
     def forward(self, downstream_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -62,32 +108,11 @@ class NeuralFoilSampling(Block):
             model_size=self.config.neuralFoilSampling.neuralFoil_size,
         )
         
-        conf = self._last_aero_coeff.get("analysis_confidence")
-        try:
-            conf_mean = float(conf.mean().detach().cpu().item())
-        except Exception:
-            conf_mean = 1.0
+        constraints = {k: v.detach() for k, v in self.constraints(self._last_aero_coeff).items()}
+        aug_lagrangian = float(self.augmented_lagrangian.penalty(constraints).cpu().item())
 
-        constraint_violation = max(0.0, self.min_confidence - conf_mean)
-        lambda_val = float(self.lambda_conf.detach().cpu().item()) if isinstance(self.lambda_conf, torch.Tensor) else float(self.lambda_conf)
-        aug_lagrangian = lambda_val * constraint_violation + 0.5 * float(self.rho) * (constraint_violation ** 2)
-
-        # Cl/Cd constraint
-        CL_fwd = self._last_aero_coeff["CL"].detach()
-        CD_fwd = self._last_aero_coeff["CD"].detach()
-        CD_safe_fwd = torch.clamp(CD_fwd, min=1e-5)
-        cl_cd_mean = float((CL_fwd / CD_safe_fwd).mean().cpu().item())
-        
-        violation_clcd = max(0.0, self.min_avg_Cl_Cd - cl_cd_mean)
-        lambda_clcd_val = float(self.lambda_clcd.detach().cpu().item()) if isinstance(self.lambda_clcd, torch.Tensor) else float(self.lambda_clcd)
-        aug_lagrangian += lambda_clcd_val * violation_clcd + 0.5 * float(self.rho) * (violation_clcd ** 2)
-        
         if self.config.io.wandb.enabled:
-            metrics = {
-                "lagrangian/lambda_conf": lambda_val,
-                "lagrangian/lambda_clcd": lambda_clcd_val
-            }
-            wandb.log(metrics, step=downstream_info["iteration"])
+            wandb.log(self.augmented_lagrangian.metrics(constraints), step=downstream_info["iteration"])
 
         # Validation forward pass
         B_val = self.alpha_val.shape[0]
@@ -127,26 +152,12 @@ class NeuralFoilSampling(Block):
         CL = self._last_aero_coeff["CL"]
         CD = self._last_aero_coeff["CD"]
         CM = self._last_aero_coeff["CM"]
-        conf = self._last_aero_coeff["analysis_confidence"]
-        
-        constraint = self.min_confidence - conf.mean() 
-        constraint_violation = torch.relu(constraint)
-        constraint_lagrangian = self.lambda_conf * constraint_violation + self.rho/2 * (constraint_violation**2)
 
-        # Cl/Cd constraint backward
-        CD_safe = torch.clamp(CD, min=1e-5)
-        cl_cd_ratio = CL / CD_safe
-        constraint_clcd = self.min_avg_Cl_Cd - cl_cd_ratio.mean()
-        violation_clcd = torch.relu(constraint_clcd)
-        constraint_lagrangian_clcd = self.lambda_clcd * violation_clcd + self.rho/2 * (violation_clcd**2)
-        
-        constraint_lagrangian = constraint_lagrangian + constraint_lagrangian_clcd
-        
-        if violation_clcd.detach() > 1.0:
-             self.logger.warning(f"⚠️ Large Cl/Cd violation. Mean: {cl_cd_ratio.mean().detach():.3f}. Target: {self.min_avg_Cl_Cd:.3f}")
+        constraints = self.constraints(self._last_aero_coeff)
+        constraint_lagrangian = self.augmented_lagrangian.penalty(constraints)
 
-        if constraint_violation.detach() > 0.1:
-            self.logger.critical(f"⚠️ Large confidence violation detected. Training may become unstable. Mean Confidence {conf.mean():.3f}. Target {self.min_confidence:.3f}")
+        self._log_constraint_warnings(constraints)
+
         if CL.isnan().any():
             self.logger.critical("⚠️ NaN detected in NeuralFoilSampling feedforward CL")
         if CD.isnan().any():
@@ -175,10 +186,8 @@ class NeuralFoilSampling(Block):
         if grad[3].isnan().any():
             self.logger.critical(f"⚠️ NaN detected in NeuralFoilSampling backward grad[3]")
             
-        with torch.no_grad():
-            self.lambda_conf += self.rho * constraint_violation.mean().detach()
-            self.lambda_clcd += self.rho * violation_clcd.mean().detach()
-            
+        self.augmented_lagrangian.step({k: float(v.detach()) for k, v in constraints.items()})
+
         return {
             "dupper_params": grad[0] + grad_lagrangian[0],
             "dlower_params": grad[1] + grad_lagrangian[1],
@@ -187,6 +196,5 @@ class NeuralFoilSampling(Block):
         }
         
     def resume(self, checkpoint):
-        self.lambda_conf = torch.tensor(checkpoint["lagrangian/lambda_conf"], device=self.device, dtype=torch.float32, requires_grad=False)
-        self.lambda_clcd = torch.tensor(checkpoint["lagrangian/lambda_clcd"], device=self.device, dtype=torch.float32, requires_grad=False)
+        self.augmented_lagrangian.load_state_dict(checkpoint)
 

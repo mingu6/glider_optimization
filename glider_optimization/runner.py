@@ -2,6 +2,7 @@ from typing import Dict
 import logging
 import random
 import numpy as np
+import os
 import wandb
 from glider_optimization.config import Config
 from glider_optimization.blockBase import Block
@@ -93,8 +94,67 @@ class Runner:
         
         self.start_iteration = self.config.io.wandb.checkpoint_iteration + 1
 
+    def _chain_state_load(self):
+        """Restore Adam moments, LR schedule position and AL duals from a previous link.
+
+        Continuation links are adjacent problems: lambda for the epsilon constraint is
+        close to its neighbour's, and Adam's moments describe the same design space.
+        Restarting both each link made every link spend its early iterations
+        rediscovering what the previous one had already established.
+        """
+        path = self.config.run.chain_state_path
+        if not path or not os.path.exists(path):
+            return
+        try:
+            import torch
+            state = torch.load(path, weights_only=False)
+        except Exception as exc:
+            self.logger.warning(f"Could not read chain state: {exc}")
+            return
+
+        af = self.blocks.get("Airfoil")
+        if af is not None and "optimizer" in state:
+            try:
+                af.optimizer.load_state_dict(state["optimizer"])
+                if af.scheduler is not None and "scheduler" in state:
+                    af.scheduler.load_state_dict(state["scheduler"])
+            except Exception as exc:
+                self.logger.warning(f"Could not restore optimizer state: {exc}")
+
+        ev = self.blocks.get("Evaluation")
+        if ev is not None and "task_al" in state:
+            ev.task_al.load_state_dict(state["task_al"])
+        nf = self.blocks.get("NeuralFoilSampling") or self.blocks.get("ReducedModel")
+        if nf is not None and hasattr(nf, "augmented_lagrangian") and "design_al" in state:
+            nf.augmented_lagrangian.load_state_dict(state["design_al"])
+        self.logger.info(f"Restored chain state from {path}")
+
+    def _chain_state_save(self):
+        path = self.config.run.chain_state_path
+        if not path:
+            return
+        try:
+            import torch
+            state = {}
+            af = self.blocks.get("Airfoil")
+            if af is not None:
+                state["optimizer"] = af.optimizer.state_dict()
+                if af.scheduler is not None:
+                    state["scheduler"] = af.scheduler.state_dict()
+            ev = self.blocks.get("Evaluation")
+            if ev is not None:
+                state["task_al"] = ev.task_al.state_dict()
+            nf = self.blocks.get("NeuralFoilSampling") or self.blocks.get("ReducedModel")
+            if nf is not None and hasattr(nf, "augmented_lagrangian"):
+                state["design_al"] = nf.augmented_lagrangian.state_dict()
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            torch.save(state, path)
+        except Exception as exc:
+            self.logger.warning(f"Could not persist chain state: {exc}")
+
     def run(self):
         self.logger.info("Runner started")
+        self._chain_state_load()
         num_iterations = self.config.run.max_outer_iters
 
         for iteration in range(self.start_iteration, num_iterations):
@@ -104,7 +164,12 @@ class Runner:
             
             self._forward_pass(iteration)
             self._backward_pass(iteration)
+            # Persist periodically, not only at the end: a link that is interrupted
+            # would otherwise lose its Adam moments and duals entirely.
+            if iteration % max(self.config.io.log_every, 1) == 0:
+                self._chain_state_save()
         
+        self._chain_state_save()
         self.logger.info("Runner finished")
         if self.wandb_enabled:
             wandb.finish()

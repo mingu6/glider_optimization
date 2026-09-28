@@ -112,6 +112,7 @@ class GliderPerching :
         v_w = sqrt(x_wdot * x_wdot + z_wdot * z_wdot + 1e-8) # flow/air speed
         
         alpha_w = theta - atan2(z_wdot, x_wdot)
+        self.alpha_w = alpha_w   # retained so initCost can penalise it
         Re = rho * v_w * chord / mu_air
         
         nfConfig = self.config.neuralFoilSampling
@@ -180,14 +181,71 @@ class GliderPerching :
         self.state_weights = state_weights
         self.cost_auxvar = vcat([])
 
-        err = self.X - self.goal
-        self.path_cost = wu * (self.U * self.U) + err.T @ diag(state_weights)*stage_scale @ err 
-        if self.config.evaluation.mode == EvaluationMode.SoftLanding:
-            self.path_cost += 0.1*pow(err[6],2)
+        if self.config.evaluation.mode == EvaluationMode.SoftTouchdown:
+            # Land as gently as possible: minimise the kinetic energy carried into the
+            # ground. Landing *distance* proved unusable as an objective -- the free
+            # final time makes it multi-modal, so neighbouring designs land in
+            # different basins and Phi_2 scattered by +/-0.6 m against only 0.75 m of
+            # design signal, leaving the gradient mostly noise. Terminal speed is a
+            # state quantity that moves smoothly with the design instead.
+            ocp_cfg = self.config.ocp
+            self.path_cost = wu * (self.U * self.U) * self.X[7]
+            v_sq = pow(self.X[4], 2) + pow(self.X[5], 2)
+            self.final_cost = (
+                ocp_cfg.touchdown_energy_weight * v_sq
+                + ocp_cfg.touchdown_weight * pow(self.X[1], 2)
+            )
+
+        elif self.config.evaluation.mode in (EvaluationMode.Distance, EvaluationMode.ShortLanding):
+            if init_state is None:
+                raise RuntimeError(f"[initCost] Expected an initial state for {self.config.evaluation.mode}")
+            ocp_cfg = self.config.ocp
+            # Same free-final-time glide, opposite sense: Distance flies as far as it
+            # can before touching down, ShortLanding puts it down as near the launch
+            # point as it can. Sharing the transcription is what makes the two costs
+            # directly comparable in metres, which is what the epsilon-constraint needs.
+            reach = -1.0 if self.config.evaluation.mode == EvaluationMode.Distance else 1.0
+            # Glide as far as possible.  The timestep is a decision variable, so the
+            # horizon is a free final time: the terminal altitude term is what makes
+            # the flight end at touchdown, and the z >= 0 path constraint keeps it
+            # above ground on the way there.  Without it, distance could be bought
+            # by simply holding altitude in hand at the last node.
+            # Measuring from init_state[0] makes the reported cost read directly as
+            # (minus) the distance covered.
+            # Scaled by the timestep so the stage term is a time integral rather than
+            # a sum over nodes. Without this the horizon silently reweights the task:
+            # the terminal distance reward is a single term while the control effort
+            # accumulates per node, so raising the node count buys the optimizer a
+            # cheaper trajectory by simply not actuating (at 250 nodes one launch
+            # collapsed to a 5.4 m glide -- a glide ratio of 2.7 -- and IPOPT called
+            # it converged). With the dt factor the trade-off is invariant to horizon.
+            self.path_cost = wu * (self.U * self.U) * self.X[7]
+            self.final_cost = (
+                reach * ocp_cfg.distance_weight * (self.X[0] - init_state[0])
+                + ocp_cfg.touchdown_weight * pow(self.X[1], 2)
+                + ocp_cfg.sink_weight * pow(self.X[5], 2)
+            )
+        else:
+            err = self.X - self.goal
+            self.path_cost = wu * (self.U * self.U) + err.T @ diag(state_weights)*stage_scale @ err
+            if self.config.evaluation.mode == EvaluationMode.SoftLanding:
+                self.path_cost += 0.1*pow(err[6],2)
+            self.final_cost = err.T @ diag(state_weights) @ err
+
+        # Optional stage penalty on angle of attack. The surrogate is only blended in
+        # for |alpha| <= AoA_max (smooth_gate); past that the model falls back to the
+        # analytic 2*sin^2(alpha), which does not depend on the airfoil at all. A
+        # landing that parachutes down at ~107 deg therefore spends most of its flight
+        # aerodynamically blind to the design -- so discouraging high alpha keeps the
+        # trajectory both physically sensible and actually sensitive to the geometry.
+        aoa_weight = getattr(self.config.ocp, "aoa_weight", 0.0)
+        if aoa_weight > 0.0:
+            if not hasattr(self, "alpha_w"):
+                raise RuntimeError("[initCost] initDyn must be called before initCost to penalise alpha")
+            self.path_cost = self.path_cost + aoa_weight * (self.alpha_w * self.alpha_w)
+
         self.dpath_cost_dx = gradient(self.path_cost, self.X)
         self.dpath_cost_du = gradient(self.path_cost, self.U)
-        
-        self.final_cost = err.T @ diag(state_weights) @ err
         
     def initConstraints(self, min_phi, max_phi, max_u=None):
         # set path constraint h_final(x)
@@ -208,15 +266,51 @@ class GliderPerching :
         
         const = [path_inequ_Uub, path_inequ_Ulb, path_inequ_Xub, path_inequ_Xlb]
         
-        if self.config.evaluation.mode == EvaluationMode.SoftLanding:
+        if self.config.evaluation.mode in (
+            EvaluationMode.SoftLanding, EvaluationMode.Distance, EvaluationMode.ShortLanding,
+            EvaluationMode.SoftTouchdown,
+        ):
             const.append(-self.X[1]) # z >= 0
             const.append(self.X[2] - pi/2 ) # -pi/2 >= theta >= pi/2
             const.append(- self.X[2] - pi/2 ) 
             
             const.append(- (self.X[1] - self.l * sin(self.X[2]) ) ) # back-z >= 0
             const.append(- (self.X[1] + self.l * sin(self.X[2]) ) ) # front-z >= 0
+
+        if self.config.evaluation.mode in (
+            EvaluationMode.SoftLanding, EvaluationMode.ShortLanding, EvaluationMode.SoftTouchdown
+        ):
+            # |alpha_w| <= aoa_max: keep the flight inside the surrogate's envelope.
+            # smooth_gate only blends NeuralFoil in for |alpha| <= AoA_max; past that
+            # the model falls back to the analytic 2*sin^2(alpha), which does not
+            # depend on the airfoil at all. Left unbounded, the cheapest way to land
+            # near the launch point is to stall and parachute straight down -- glide
+            # ratio 0.9 with ~107 deg alpha for most of the descent, so ~73% of the
+            # flight was aerodynamically blind to the design and the optimiser drove
+            # the section thin. A stage penalty on alpha only taxed that behaviour
+            # (glide ratio 1.07 -> 2.84 at w=2, but still 66% stalled and a 4x larger
+            # cost); a hard bound removes the regime without distorting the objective.
+            # ShortLanding needs it just as much: with landing distance as the
+            # objective, stalling and dropping vertically is trivially optimal.
+            aoa_max = self.config.ocp.aoa_max * pi / 180.0
+            const.append(self.alpha_w - aoa_max)
+            const.append(-self.alpha_w - aoa_max)
+
+        if self.config.evaluation.mode in (EvaluationMode.ShortLanding, EvaluationMode.SoftTouchdown):
+            # xdot >= 0: never fly backwards.
+            # Minimising horizontal distance invites the solver to kill it with a
+            # manoeuvre rather than with aerodynamics -- zoom climb, hang nose-up near
+            # 90 deg at 0.7 m/s (a third of stall), then fall backwards; 51 of 150
+            # nodes travelled backwards for a net -1.33 m. |theta| <= pi/2 does not
+            # exclude it, since 90 deg nose-up *is* the hang attitude.
+            # It also makes the task nearly design-independent -- landing distance sat
+            # at 2.6-2.9 m across a run where glide distance went 12 -> 29 m -- which
+            # collapses the trade-off the epsilon-constraint is meant to trace: if the
+            # manoeuvre lands short, the design never needs drag.
+            const.append(-self.X[4])
                 
         self.path_inequ = vcat(const)
+
         self.final_inequ = vcat(const[2:])
 
     def play_animation(self, state_traj, control_traj, 

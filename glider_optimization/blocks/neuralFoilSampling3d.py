@@ -100,23 +100,11 @@ class NeuralFoilSampling3D(NeuralFoilSampling):
         self._last_input = downstream_info
         self._last_aero_coeff = self._eval_from(downstream_info, self.alpha_batch, self.Re_batch)
 
-        conf_mean = float(self._last_aero_coeff["analysis_confidence"].mean().item())
-        constraint_violation = max(0.0, self.min_confidence - conf_mean)
-        lambda_val = float(self.lambda_conf.item())
-        aug_lagrangian = lambda_val * constraint_violation + 0.5 * self.rho * constraint_violation ** 2
-
-        CL_fwd = self._last_aero_coeff["CL"].detach()
-        CD_fwd = self._last_aero_coeff["CD"].detach()
-        cl_cd_mean = float((CL_fwd / CD_fwd.clamp(min=1e-5)).mean().item())
-        violation_clcd = max(0.0, self.min_avg_Cl_Cd - cl_cd_mean)
-        lambda_clcd_val = float(self.lambda_clcd.item())
-        aug_lagrangian += lambda_clcd_val * violation_clcd + 0.5 * self.rho * violation_clcd ** 2
+        constraints = {k: v.detach() for k, v in self.constraints(self._last_aero_coeff).items()}
+        aug_lagrangian = float(self.augmented_lagrangian.penalty(constraints).cpu().item())
 
         if self.config.io.wandb.enabled:
-            wandb.log(
-                {"lagrangian/lambda_conf": lambda_val, "lagrangian/lambda_clcd": lambda_clcd_val},
-                step=downstream_info["iteration"],
-            )
+            wandb.log(self.augmented_lagrangian.metrics(constraints), step=downstream_info["iteration"])
 
         with torch.no_grad():
             val_aero = self._eval_from(downstream_info, self.alpha_val, self.Re_val)
@@ -145,25 +133,11 @@ class NeuralFoilSampling3D(NeuralFoilSampling):
         CL = self._last_aero_coeff["CL"]
         CD = self._last_aero_coeff["CD"]
         CM = self._last_aero_coeff["CM"]
-        conf = self._last_aero_coeff["analysis_confidence"]
 
-        constraint_violation = torch.relu(self.min_confidence - conf.mean())
-        constraint_lagrangian = self.lambda_conf * constraint_violation + self.rho / 2 * constraint_violation ** 2
+        constraints = self.constraints(self._last_aero_coeff)
+        constraint_lagrangian = self.augmented_lagrangian.penalty(constraints)
 
-        cl_cd_ratio = CL / CD.clamp(min=1e-5)
-        violation_clcd = torch.relu(self.min_avg_Cl_Cd - cl_cd_ratio.mean())
-        constraint_lagrangian = constraint_lagrangian + (
-            self.lambda_clcd * violation_clcd + self.rho / 2 * violation_clcd ** 2
-        )
-
-        if violation_clcd.detach() > 1.0:
-            self.logger.warning(
-                "Large Cl/Cd violation: mean %.3f, target %.3f", cl_cd_ratio.mean().item(), self.min_avg_Cl_Cd
-            )
-        if constraint_violation.detach() > 0.1:
-            self.logger.critical(
-                "Large confidence violation: mean %.3f, target %.3f", conf.mean().item(), self.min_confidence
-            )
+        self._log_constraint_warnings(constraints)
 
         params = [
             self._last_input["upper_weights"], self._last_input["lower_weights"],
@@ -181,9 +155,7 @@ class NeuralFoilSampling3D(NeuralFoilSampling):
             if g.isnan().any():
                 self.logger.critical("NaN detected in NeuralFoilSampling3D backward grad[%d]", i)
 
-        with torch.no_grad():
-            self.lambda_conf += self.rho * constraint_violation.detach()
-            self.lambda_clcd += self.rho * violation_clcd.detach()
+        self.augmented_lagrangian.step({k: float(v.detach()) for k, v in constraints.items()})
 
         keys = [
             "dupper_params", "dlower_params", "dleading_edge_param", "dTE_thickness_param",

@@ -15,6 +15,9 @@ class COCsys:
     def __init__(self, project_name='my cpdp object'):
         self.project_name = project_name
         self.inf = 1e20
+        # State index whose negativity means "below ground"; used only to keep the
+        # initial guess out of the earth. None disables the clamp.
+        self.ground_index = None
 
     # define the tunable parameter (if exists)
     def setAuxvarVariable(self, auxvar=None):
@@ -152,7 +155,7 @@ class COCsys:
             self.init_condition_fn = casadi.Function('initial_condition', [self.auxvar], [self.init_condition])
 
     # optimal control solver (using direct methods)
-    def ocSolver(self, horizon, init_state=None, auxvar_value=1, print_level=0, timeVarying=False, warm_start=False):
+    def ocSolver(self, horizon, init_state=None, auxvar_value=1, print_level=0, timeVarying=False, warm_start=False, max_iter=3000):
 
         if not hasattr(self, 'final_equ_cstr'):
             self.setFinalEquCstr()
@@ -225,7 +228,21 @@ class COCsys:
             w += [Xk]
             lbw += self.state_lb
             ubw += self.state_ub
-            x0 = self.dyn_fn(x0, u0, auxvar_value).full().ravel().tolist()
+            x0_next = self.dyn_fn(x0, u0, auxvar_value).full().ravel().tolist()
+            # Freeze the guess at touchdown. The rollout uses zero controls, so the
+            # glider simply falls: over 500 nodes it ends ~36 m *underground*, leaving
+            # IPOPT a starting point that violates z >= 0 (and both wing-tip clearance
+            # constraints) at nearly every node -- ~1500 deeply violated inequalities.
+            # It then never reaches primal feasibility: dual infeasibility runs to 1e6
+            # and regularisation to 1e4. The violation scales with the horizon (17.7 m
+            # at 300 nodes, 36.1 m at 500), which is why the long glide task failed
+            # constantly while the short landing task did not. Holding the state once
+            # it reaches the ground trades those for small dynamics residuals (~dt*f),
+            # which IPOPT handles far better. This only changes the starting point,
+            # never the solution.
+            if self.ground_index is not None and x0_next[self.ground_index] < 0.0:
+                x0_next = list(x0)
+            x0 = x0_next
             w0 += x0
 
             # Add constraint for the dynamics
@@ -249,7 +266,8 @@ class COCsys:
         J = J + self.final_cost_fn(Xk, auxvar_value)
 
         # Create an NLP solver and solve
-        opts = {'ipopt.print_level': print_level, 'ipopt.sb': 'yes', 'print_time': print_level}
+        opts = {'ipopt.print_level': print_level, 'ipopt.sb': 'yes', 'print_time': print_level,
+                'ipopt.max_iter': max_iter}
         if warm_start and hasattr(self, 'w_opt_prev') and self.w_opt_prev is not None:
             opts.update({'ipopt.warm_start_init_point': 'yes',
                          'ipopt.warm_start_bound_push': 1e-6,

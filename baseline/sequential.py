@@ -6,6 +6,7 @@ import torch.nn as nn
 import aerosandbox as asb
 from glider_optimization.utils.cu_kulfan_airfoil import get_aero_from_kulfan_parameters_cuda
 from glider_optimization.config import load_config
+from glider_optimization.utils.augmented_lagrangian import AugmentedLagrangian
 from glider_optimization.blocks import NeuralFoilSampling, ReducedModel, OCP, Evaluation
 from glider_optimization.logger import setup_logging
 import matplotlib
@@ -24,39 +25,47 @@ class Objective:
 
 @dataclass
 class Constraint:
+    """A constraint, plus its own augmented Lagrangian (see
+    glider_optimization.utils.augmented_lagrangian for the formulation)."""
+
     name: str
     fn: QuantityFn
     kind: str  # 'ge' | 'le' | 'eq'
     target: float
     mu: float = 10.0
-    lam: float = 0.0 
+    al: AugmentedLagrangian = field(init=False)
+
+    def __post_init__(self):
+        if self.kind not in ("ge", "le", "eq"):
+            raise ValueError(f"Unknown constraint kind '{self.kind}' for '{self.name}'")
+        self.al = AugmentedLagrangian(
+            names=(self.name,),
+            equalities=(self.name,) if self.kind == "eq" else (),
+            rho=self.mu,
+        )
+
+    @property
+    def lam(self) -> float:
+        return self.al.states[self.name].lam
+
+    def residual(self, quantity: torch.Tensor) -> torch.Tensor:
+        """The constraint written as g <= 0 (or h = 0 for 'eq')."""
+        if self.kind == "ge":
+            return self.target - quantity
+        if self.kind == "le":
+            return quantity - self.target
+        return quantity - self.target
 
     def violation(self, quantity: torch.Tensor) -> torch.Tensor:
-        if self.kind == "ge":
-            return torch.relu(self.target - quantity)
-        elif self.kind == "le":
-            return torch.relu(quantity - self.target)
-        elif self.kind == "eq":
-            return quantity - self.target
-        else:
-            raise ValueError(f"Unknown constraint kind '{self.kind}' for '{self.name}'")
+        g = self.residual(quantity)
+        return g.abs() if self.kind == "eq" else torch.relu(g)
 
     def lagrangian_term(self, quantity: torch.Tensor) -> torch.Tensor:
-        v = self.violation(quantity)
-        if self.kind == "eq":
-            # standard equality augmented Lagrangian: linear + quadratic, no relu
-            return self.lam * v + 0.5 * self.mu * v ** 2
-        else:
-            return self.lam * v + 0.5 * self.mu * v ** 2
+        return self.al.penalty({self.name: self.residual(quantity).mean()})
 
     def update_multiplier(self, quantity: torch.Tensor):
         with torch.no_grad():
-            v = self.violation(quantity)
-            if self.kind == "ge" or self.kind == "le":
-                # keep lambda >= 0 for inequality constraints
-                self.lam = max(0.0, self.lam + self.mu * v.mean().item())
-            else:
-                self.lam = self.lam + self.mu * v.mean().item()
+            self.al.step({self.name: self.residual(quantity).mean().item()})
 
 
 @dataclass
